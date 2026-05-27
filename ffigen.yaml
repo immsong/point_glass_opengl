@@ -1,0 +1,15 @@
+# Run with `dart run ffigen --config ffigen.yaml`.
+name: PointGlassOpenglBindings
+description: |
+  Bindings for `src/point_glass_opengl.h`.
+
+  Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
+output: 'lib/point_glass_opengl_bindings_generated.dart'
+headers:
+  entry-points:
+    - 'src/point_glass_opengl.h'
+  include-directives:
+    - 'src/point_glass_opengl.h'
+comments:
+  style: any
+  length: full
