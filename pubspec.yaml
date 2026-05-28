@@ -38,14 +38,13 @@ flutter:
   # Please refer to README.md for a detailed explanation.
   plugin:
     platforms:
-    # This FFI plugin project was generated without specifying any
-    # platforms with the `--platform` argument. If you see the `some_platform` map below, remove it and
-    # then add platforms following the instruction here:
-    # https://flutter.dev/to/pubspec-plugin-platforms
-    # -------------------
-      some_platform:
-        ffiPlugin: true
-    # -------------------
+      android:
+        package: com.example.point_glass_opengl
+        pluginClass: PointGlassOpenglPlugin
+      linux:
+        pluginClass: PointGlassOpenglPlugin
+      windows:
+        pluginClass: PointGlassOpenglPlugin
 
   # To add assets to your plugin package, add an assets section, like this:
   # assets:
