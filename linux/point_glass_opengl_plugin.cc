@@ -17,7 +17,10 @@ G_DECLARE_FINAL_TYPE(PointGlassTexture, point_glass_texture, POINT_GLASS, TEXTUR
 struct _PointGlassTexture
 {
   FlTextureGL parent_instance;
-  // TODO: 이후 여기에 Rust Renderer 포인터를 저장하여 그리기 명령을 내릴 예정입니다.
+  void *renderer_ptr;          // Rust Renderer 인스턴스 주소
+  void (*render_func)(void *); // Rust render_frame 함수 주소
+  uint32_t tex_id;             // 엔진에 넘길 텍스처 ID
+  uint32_t fbo_id;             // Rust가 그릴 캔버스(FBO) ID
 };
 
 G_DEFINE_TYPE(PointGlassTexture, point_glass_texture, fl_texture_gl_get_type())
@@ -27,41 +30,50 @@ static void point_glass_texture_init(PointGlassTexture *self) {}
 // Flutter 엔진이 "이 텍스처에 그릴 화면(OpenGL)을 내놔라!" 할 때마다 호출되는 콜백
 // (이 콜백이 불릴 때는 이미 Flutter 렌더링 스레드의 OpenGL Context가 활성화된 상태입니다)
 static gboolean point_glass_texture_populate(FlTextureGL *texture,
-                                             uint32_t *target,
-                                             uint32_t *name,
-                                             uint32_t *width,
-                                             uint32_t *height,
+                                             uint32_t *target, uint32_t *name,
+                                             uint32_t *width, uint32_t *height,
                                              GError **error)
 {
-  // 텍스처는 한 번만 생성해서 계속 재사용합니다.
-  static uint32_t gl_tex_id = 0;
+  PointGlassTexture *pg_texture = POINT_GLASS_TEXTURE(texture);
 
-  if (gl_tex_id == 0)
+  // 1. 최초 1회 텍스처와 FBO 생성
+  if (pg_texture->tex_id == 0)
   {
-    g_print("[C++] Generating real OpenGL texture...\n");
+    g_print("[C++] Generating OpenGL Texture and FBO for Rust...\n");
 
-    glGenTextures(1, &gl_tex_id);
-    glBindTexture(GL_TEXTURE_2D, gl_tex_id);
+    glGenTextures(1, &pg_texture->tex_id);
+    glBindTexture(GL_TEXTURE_2D, pg_texture->tex_id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 400, 400, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // 1x1 픽셀짜리 빨간색(Red) 데이터 (R, G, B, A)
-    const uint8_t pixels[4] = {255, 0, 0, 255};
-
-    // 그래픽 카드(VRAM)로 픽셀 데이터 전송
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-
-    // 텍스처 필터링 설정 (설정하지 않으면 검은 화면이 나올 수 있습니다)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    // Rust가 텍스처에 직접 그릴 수 있도록 FBO를 묶어줍니다.
+    glGenFramebuffers(1, &pg_texture->fbo_id);
+    glBindFramebuffer(GL_FRAMEBUFFER, pg_texture->fbo_id);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pg_texture->tex_id, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
   }
 
-  // Flutter 엔진에게 우리가 만든 텍스처 정보를 넘겨줍니다.
-  *target = GL_TEXTURE_2D;
-  *name = gl_tex_id;
+  // 2. FBO 바인딩 후 Rust 렌더러 호출!
+  if (pg_texture->render_func && pg_texture->renderer_ptr)
+  {
+    GLint previous_fbo;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous_fbo);
 
-  // 원본 텍스처 크기를 1x1로 줍니다.
-  // (Flutter UI의 400x400 위젯 크기에 맞춰서 그래픽카드가 쫙 늘려줍니다)
-  *width = 1;
-  *height = 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, pg_texture->fbo_id);
+    glViewport(0, 0, 400, 400);
+
+    // 🚀 드디어 Rust가 화면에 그림을 그립니다! 🚀
+    pg_texture->render_func(pg_texture->renderer_ptr);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, previous_fbo);
+  }
+
+  // 3. 엔진에 결과 텍스처 보고
+  *target = GL_TEXTURE_2D;
+  *name = pg_texture->tex_id;
+  *width = 400;
+  *height = 400;
 
   return TRUE;
 }
@@ -72,10 +84,10 @@ static void point_glass_texture_class_init(PointGlassTextureClass *klass)
   gl_class->populate = point_glass_texture_populate;
 }
 
-static PointGlassTexture *point_glass_texture_new()
-{
-  return POINT_GLASS_TEXTURE(g_object_new(point_glass_texture_get_type(), nullptr));
-}
+// static PointGlassTexture *point_glass_texture_new()
+// {
+//   return POINT_GLASS_TEXTURE(g_object_new(point_glass_texture_get_type(), nullptr));
+// }
 // ----------------------------------------------------------------
 
 struct _PointGlassOpenglPlugin
@@ -87,25 +99,31 @@ struct _PointGlassOpenglPlugin
 G_DEFINE_TYPE(PointGlassOpenglPlugin, point_glass_opengl_plugin, g_object_get_type())
 
 static void point_glass_opengl_plugin_handle_method_call(
-    PointGlassOpenglPlugin *self,
-    FlMethodCall *method_call)
+    PointGlassOpenglPlugin *self, FlMethodCall *method_call)
 {
   g_autoptr(FlMethodResponse) response = nullptr;
   const gchar *method = fl_method_call_get_name(method_call);
 
   if (strcmp(method, "createTexture") == 0)
   {
-    g_print("[C++] createTexture called from Dart (Linux)!\n");
+    // Dart가 넘겨준 메모리 주소 2개(Renderer, RenderFunction)를 파싱
+    FlValue *args = fl_method_call_get_args(method_call);
+    int64_t renderer_address = fl_value_get_int(fl_value_lookup_string(args, "rendererPtr"));
+    int64_t render_func_address = fl_value_get_int(fl_value_lookup_string(args, "renderFuncPtr"));
 
-    // 2. 텍스처 생성 및 등록
     FlTextureRegistrar *texture_registrar = fl_plugin_registrar_get_texture_registrar(self->registrar);
-    PointGlassTexture *texture = point_glass_texture_new();
+    PointGlassTexture *texture = POINT_GLASS_TEXTURE(g_object_new(point_glass_texture_get_type(), nullptr));
+
+    // 텍스처 객체에 주소 저장 및 초기화
+    texture->renderer_ptr = reinterpret_cast<void *>(renderer_address);
+    texture->render_func = reinterpret_cast<void (*)(void *)>(render_func_address);
+    texture->tex_id = 0;
+    texture->fbo_id = 0;
 
     fl_texture_registrar_register_texture(texture_registrar, FL_TEXTURE(texture));
 
-    // 3. 엔진으로부터 발급받은 "진짜 텍스처 ID"를 Dart로 반환
     int64_t texture_id = fl_texture_get_id(FL_TEXTURE(texture));
-    g_print("[C++] Real Texture ID generated: %ld\n", texture_id);
+    g_print("[C++] Texture pipeline established. ID: %ld\n", texture_id);
 
     g_autoptr(FlValue) result = fl_value_new_int(texture_id);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));

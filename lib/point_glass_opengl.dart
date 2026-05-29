@@ -20,7 +20,6 @@ class PointGlassController {
   late RenderFrameDart _renderFrame;
 
   Future<void> initialize() async {
-    // 1. Rust 라이브러리 로드 (테스트용 로컬 경로 유지)
     _dylib = DynamicLibrary.open(
       Platform.isWindows
           ? '../rust/target/debug/point_glass_opengl_core.dll'
@@ -30,16 +29,21 @@ class PointGlassController {
     _createRenderer = _dylib
         .lookup<NativeFunction<CreateRendererC>>('create_renderer')
         .asFunction();
-    _renderFrame = _dylib
-        .lookup<NativeFunction<RenderFrameC>>('render_frame')
-        .asFunction();
 
-    // 2. Rust 측 렌더러 인스턴스 생성
+    // 포인터 주소를 C++로 넘기기 위해 함수 레퍼런스도 추출합니다.
+    final renderFuncPointer = _dylib.lookup<NativeFunction<RenderFrameC>>(
+      'render_frame',
+    );
+
+    _renderFrame = renderFuncPointer.asFunction();
+
     _rendererPtr = _createRenderer();
 
-    // 3. 네이티브(Windows C++)에 텍스처 생성 요청 및 ID 수신
-    // 이 ID를 통해 Flutter Texture 위젯과 연결합니다.
-    textureId = await _channel.invokeMethod<int>('createTexture');
+    // --- 수정된 부분: C++에 Texture 생성을 요청하면서 Rust의 메모리 주소들을 함께 전달 ---
+    textureId = await _channel.invokeMethod<int>('createTexture', {
+      'rendererPtr': _rendererPtr!.address,
+      'renderFuncPtr': renderFuncPointer.address,
+    });
   }
 
   void render() {

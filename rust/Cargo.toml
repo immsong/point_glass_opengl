@@ -7,3 +7,5 @@ edition = "2024"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+gl = "0.14.0"
+libc = "0.2.186"
