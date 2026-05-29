@@ -18,6 +18,16 @@ typedef SetPointsC =
 typedef SetPointsDart =
     void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
 
+typedef UpdateCameraC =
+    Void Function(Pointer<Void> renderer, Float yaw, Float pitch, Float radius);
+typedef UpdateCameraDart =
+    void Function(
+      Pointer<Void> renderer,
+      double yaw,
+      double pitch,
+      double radius,
+    );
+
 class PointGlassController {
   static const MethodChannel _channel = MethodChannel('point_glass_opengl');
 
@@ -26,6 +36,12 @@ class PointGlassController {
   late DynamicLibrary _dylib;
   late CreateRendererDart _createRenderer;
   late SetPointsDart _setPoints;
+  late UpdateCameraDart _updateCamera;
+
+  // 카메라 상태값 보관
+  double yaw = 0.0;
+  double pitch = 0.0;
+  double radius = 2.5;
 
   Future<void> initialize() async {
     _dylib = DynamicLibrary.open(
@@ -40,6 +56,10 @@ class PointGlassController {
 
     _setPoints = _dylib
         .lookup<NativeFunction<SetPointsC>>('set_points')
+        .asFunction();
+
+    _updateCamera = _dylib
+        .lookup<NativeFunction<UpdateCameraC>>('update_camera')
         .asFunction();
 
     // 포인터 주소를 C++로 넘기기 위해 함수 레퍼런스도 추출합니다.
@@ -79,6 +99,23 @@ class PointGlassController {
       // 💡 핵심: FFI 직접 호출 대신, C++에 렌더링 신호 전송!
       _channel.invokeMethod('requestRender');
     }
+  }
+
+  // 마우스 드래그로 시점 회전
+  void changeCameraAngle(double deltaX, double deltaY) {
+    if (_rendererPtr == null) return;
+    yaw += deltaX * 0.01;
+    pitch -= deltaY * 0.01;
+    _updateCamera(_rendererPtr!, yaw, pitch, radius);
+    render(); // 카메라가 움직였으니 즉시 화면 갱신!
+  }
+
+  // 휠 스크롤로 줌인/줌아웃
+  void changeCameraZoom(double deltaZoom) {
+    if (_rendererPtr == null) return;
+    radius += deltaZoom;
+    _updateCamera(_rendererPtr!, yaw, pitch, radius);
+    render();
   }
 }
 
