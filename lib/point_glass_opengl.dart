@@ -1,7 +1,10 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:ffi/ffi.dart';
 
 // Rust Core와 통신할 FFI 함수들 (간이 선언)
 typedef CreateRendererC = Pointer<Void> Function();
@@ -10,6 +13,11 @@ typedef CreateRendererDart = Pointer<Void> Function();
 typedef RenderFrameC = Void Function(Pointer<Void> renderer);
 typedef RenderFrameDart = void Function(Pointer<Void> renderer);
 
+typedef SetPointsC =
+    Void Function(Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
+typedef SetPointsDart =
+    void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
+
 class PointGlassController {
   static const MethodChannel _channel = MethodChannel('point_glass_opengl');
 
@@ -17,7 +25,7 @@ class PointGlassController {
   int? textureId;
   late DynamicLibrary _dylib;
   late CreateRendererDart _createRenderer;
-  late RenderFrameDart _renderFrame;
+  late SetPointsDart _setPoints;
 
   Future<void> initialize() async {
     _dylib = DynamicLibrary.open(
@@ -30,12 +38,14 @@ class PointGlassController {
         .lookup<NativeFunction<CreateRendererC>>('create_renderer')
         .asFunction();
 
+    _setPoints = _dylib
+        .lookup<NativeFunction<SetPointsC>>('set_points')
+        .asFunction();
+
     // 포인터 주소를 C++로 넘기기 위해 함수 레퍼런스도 추출합니다.
     final renderFuncPointer = _dylib.lookup<NativeFunction<RenderFrameC>>(
       'render_frame',
     );
-
-    _renderFrame = renderFuncPointer.asFunction();
 
     _rendererPtr = _createRenderer();
 
@@ -46,10 +56,28 @@ class PointGlassController {
     });
   }
 
+  void updatePoints(Float32List points) {
+    if (_rendererPtr == null) return;
+
+    // Float32List를 C/Rust가 이해할 수 있는 메모리 포인터로 복사
+    final pointer = calloc<Float>(points.length);
+    final nativeList = pointer.asTypedList(points.length);
+    nativeList.setAll(0, points);
+
+    // Rust로 쏘기!
+    _setPoints(_rendererPtr!, pointer, points.length);
+
+    // 메모리 누수를 막기 위해 임시 포인터는 해제
+    calloc.free(pointer);
+
+    // 데이터를 업데이트했으니 화면을 다시 그리도록 요청
+    render();
+  }
+
   void render() {
-    if (_rendererPtr != null) {
-      // Rust 측에 한 프레임 그리도록 명령
-      _renderFrame(_rendererPtr!);
+    if (textureId != null) {
+      // 💡 핵심: FFI 직접 호출 대신, C++에 렌더링 신호 전송!
+      _channel.invokeMethod('requestRender');
     }
   }
 }
