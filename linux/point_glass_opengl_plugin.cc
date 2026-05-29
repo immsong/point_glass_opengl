@@ -93,7 +93,8 @@ static void point_glass_texture_class_init(PointGlassTextureClass *klass)
 struct _PointGlassOpenglPlugin
 {
   GObject parent_instance;
-  FlPluginRegistrar *registrar; // Texture 등록을 위해 registrar 보관
+  FlPluginRegistrar *registrar;
+  PointGlassTexture *current_texture;
 };
 
 G_DEFINE_TYPE(PointGlassOpenglPlugin, point_glass_opengl_plugin, g_object_get_type())
@@ -114,6 +115,8 @@ static void point_glass_opengl_plugin_handle_method_call(
     FlTextureRegistrar *texture_registrar = fl_plugin_registrar_get_texture_registrar(self->registrar);
     PointGlassTexture *texture = POINT_GLASS_TEXTURE(g_object_new(point_glass_texture_get_type(), nullptr));
 
+    self->current_texture = texture;
+
     // 텍스처 객체에 주소 저장 및 초기화
     texture->renderer_ptr = reinterpret_cast<void *>(renderer_address);
     texture->render_func = reinterpret_cast<void (*)(void *)>(render_func_address);
@@ -127,6 +130,16 @@ static void point_glass_opengl_plugin_handle_method_call(
 
     g_autoptr(FlValue) result = fl_value_new_int(texture_id);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  }
+  else if (strcmp(method, "requestRender") == 0)
+  {
+    // Dart에서 요청이 오면, Flutter 그래픽 엔진에 텍스처 갱신 명령!
+    if (self->current_texture)
+    {
+      FlTextureRegistrar *texture_registrar = fl_plugin_registrar_get_texture_registrar(self->registrar);
+      fl_texture_registrar_mark_texture_frame_available(texture_registrar, FL_TEXTURE(self->current_texture));
+    }
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
   }
   else
   {
