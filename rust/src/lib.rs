@@ -1,21 +1,35 @@
 use std::ffi::c_void;
 use std::ptr;
 
-// 1. MVP 행렬(uMVP)이 추가된 셰이더
+// 1. Z-Depth를 계산해서 프래그먼트 셰이더로 넘겨주는 Vertex Shader
 const VERTEX_SHADER_SOURCE: &str = "#version 300 es\n\
     layout (location = 0) in vec3 aPos;\n\
     uniform mat4 uMVP;\n\
+    out float vDepth;\n\
     void main() {\n\
-        // 점의 원래 좌표(aPos)에 MVP 행렬을 곱해 3D 공간으로 변환합니다.
-        gl_Position = uMVP * vec4(aPos, 1.0);\n\
+        vec4 pos = uMVP * vec4(aPos, 1.0);\n\
+        gl_Position = pos;\n\
         gl_PointSize = 2.0;\n\
+        // Z값을 0.0 ~ 1.0 사이로 정규화하여 프래그먼트 셰이더로 전달\n\
+        vDepth = (pos.z / pos.w + 1.0) * 0.5;\n\
     }";
 
+// 2. 전달받은 깊이(Depth)에 따라 무지개(Jet) 색상을 칠하는 Fragment Shader
 const FRAGMENT_SHADER_SOURCE: &str = "#version 300 es\n\
     precision mediump float;\n\
+    in float vDepth;\n\
     out vec4 FragColor;\n\
+    \n\
+    vec3 colormap(float t) {\n\
+        vec3 c = vec3(1.0);\n\
+        c.r = clamp(1.5 - abs(4.0 * t - 3.0), 0.0, 1.0);\n\
+        c.g = clamp(1.5 - abs(4.0 * t - 2.0), 0.0, 1.0);\n\
+        c.b = clamp(1.5 - abs(4.0 * t - 1.0), 0.0, 1.0);\n\
+        return c;\n\
+    }\n\
+    \n\
     void main() {\n\
-        FragColor = vec4(0.0, 1.0, 0.0, 1.0);\n\
+        FragColor = vec4(colormap(vDepth), 1.0);\n\
     }";
 
 pub struct Renderer {
@@ -109,12 +123,15 @@ impl Renderer {
                 self.point_count = (points.len() / 3) as i32;
                 gl::BindVertexArray(self.vao);
                 gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+
+                // 💡 핵심: STATIC_DRAW(고정) -> STREAM_DRAW(실시간 스트리밍 최적화) 로 변경!
                 gl::BufferData(
                     gl::ARRAY_BUFFER,
                     (points.len() * 4) as isize,
                     points.as_ptr() as *const c_void,
-                    gl::STATIC_DRAW,
+                    gl::STREAM_DRAW,
                 );
+
                 gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 0, ptr::null());
                 gl::EnableVertexAttribArray(0);
             }
@@ -124,8 +141,6 @@ impl Renderer {
 
             if self.point_count > 0 {
                 gl::UseProgram(self.shader_program);
-
-                // 3. 계산된 MVP 행렬을 셰이더로 전송
                 let mvp = self.calculate_mvp();
                 let mvp_loc =
                     gl::GetUniformLocation(self.shader_program, b"uMVP\0".as_ptr() as *const i8);
