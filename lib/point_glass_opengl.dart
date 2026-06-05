@@ -20,12 +20,19 @@ typedef SetPointsDart =
     void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
 
 typedef UpdateCameraC =
-    Void Function(Pointer<Void> renderer, Float yaw, Float pitch, Float radius);
+    Void Function(
+      Pointer<Void> renderer,
+      Float yaw,
+      Float pitch,
+      Float roll,
+      Float radius,
+    );
 typedef UpdateCameraDart =
     void Function(
       Pointer<Void> renderer,
       double yaw,
       double pitch,
+      double roll,
       double radius,
     );
 
@@ -38,8 +45,10 @@ typedef PanCameraC = Void Function(Pointer<Void> renderer, Float dx, Float dy);
 typedef PanCameraDart =
     void Function(Pointer<Void> renderer, double dx, double dy);
 
-typedef RotateZC = Void Function(Pointer<Void> renderer, Float delta);
-typedef RotateZDart = void Function(Pointer<Void> renderer, double delta);
+typedef SetDataC =
+    Void Function(Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
+typedef SetDataDart =
+    void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
 
 class PointGlassController {
   static const MethodChannel _channel = MethodChannel('point_glass_opengl');
@@ -48,14 +57,17 @@ class PointGlassController {
   int? textureId;
   late DynamicLibrary _dylib;
   late CreateRendererDart _createRenderer;
-  late SetPointsDart _setPoints;
+  late SetDataDart _setPoints;
+  late SetDataDart _setLines;
+  late SetDataDart _setPolygons;
   late UpdateCameraDart _updateCamera;
   late ResizeRendererDart _resizeRenderer;
   late PanCameraDart _panCamera;
 
   // 카메라 상태값 보관
-  double yaw = 0.0;
-  double pitch = -pi / 2; // -90° 시작
+  double yaw = pi;
+  double pitch = pi;
+  double roll = 0.0;
   double radius = 8.0;
 
   Future<void> initialize({int width = 400, int height = 400}) async {
@@ -69,8 +81,15 @@ class PointGlassController {
         .lookup<NativeFunction<CreateRendererC>>('create_renderer')
         .asFunction();
 
+    // 점, 선, 면 3가지 바인딩
     _setPoints = _dylib
-        .lookup<NativeFunction<SetPointsC>>('set_points')
+        .lookup<NativeFunction<SetDataC>>('set_points')
+        .asFunction();
+    _setLines = _dylib
+        .lookup<NativeFunction<SetDataC>>('set_lines')
+        .asFunction();
+    _setPolygons = _dylib
+        .lookup<NativeFunction<SetDataC>>('set_polygons')
         .asFunction();
 
     _updateCamera = _dylib
@@ -93,7 +112,7 @@ class PointGlassController {
     _rendererPtr = _createRenderer();
 
     // Dart의 초기 카메라 값을 Rust에 즉시 적용
-    _updateCamera(_rendererPtr!, yaw, pitch, radius);
+    _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
 
     // Rust Renderer에 초기 크기 전달
     _resizeRenderer(_rendererPtr!, width, height);
@@ -121,31 +140,36 @@ class PointGlassController {
     render();
   }
 
-  void updatePoints(Float32List points) {
-    if (_rendererPtr == null) {
-      return;
-    }
-
-    // Float32List를 C/Rust가 이해할 수 있는 메모리 포인터로 복사
-    final pointer = calloc<Float>(points.length);
-    final nativeList = pointer.asTypedList(points.length);
-    nativeList.setAll(0, points);
-
-    // Rust로 쏘기!
-    _setPoints(_rendererPtr!, pointer, points.length);
-
-    // 메모리 누수를 막기 위해 임시 포인터는 해제
-    calloc.free(pointer);
-
-    // 데이터를 업데이트했으니 화면을 다시 그리도록 요청
-    render();
-  }
-
   void render() {
     if (textureId != null) {
       // FFI 직접 호출 대신, C++에 렌더링 신호 전송
       _channel.invokeMethod('requestRender');
     }
+  }
+
+  // 내부 헬퍼 함수: 메모리 할당 및 FFI 호출을 깔끔하게 처리
+  void _sendDataToRust(SetDataDart ffiFunc, Float32List data) {
+    if (_rendererPtr == null || data.isEmpty) return;
+    final pointer = calloc<Float>(data.length);
+    pointer.asTypedList(data.length).setAll(0, data);
+    ffiFunc(_rendererPtr!, pointer, data.length);
+    calloc.free(pointer);
+  }
+
+  // 💡 사용자가 호출할 완벽한 범용 API 3개 완성!
+  void setPoints(Float32List points) {
+    _sendDataToRust(_setPoints, points);
+    render();
+  }
+
+  void setLines(Float32List lines) {
+    _sendDataToRust(_setLines, lines);
+    render();
+  }
+
+  void setPolygons(Float32List polygons) {
+    _sendDataToRust(_setPolygons, polygons);
+    render();
   }
 
   // 마우스 드래그로 시점 회전
@@ -155,16 +179,27 @@ class PointGlassController {
     }
 
     // 좌우 드래그
-    yaw += deltaX * 0.0015;
+    yaw = (yaw + (deltaX * 0.0015)).clamp(0, pi * 2);
 
     // 상하 드래그
-    pitch = (pitch - deltaY * 0.003).clamp(-pi / 2, pi / 2);
+    pitch = (pitch - deltaY * 0.003).clamp(pi, pi * 2);
 
-    _updateCamera(_rendererPtr!, yaw, pitch, radius);
+    _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
     render();
   }
 
-  // Shift+드래그: 카메라 pan
+  // Ctrl+드래그: 카메라 roll (Z축 회전)
+  void rollCamera(double deltaZ) {
+    if (_rendererPtr == null) {
+      return;
+    }
+
+    roll = (roll + (deltaZ * 0.0015)) % (pi * 2);
+    _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
+    render();
+  }
+
+  // Shift+드래그: 카메라 pan (평행 이동)
   void panCamera(double screenDx, double screenDy) {
     if (_rendererPtr == null) {
       return;
@@ -178,7 +213,7 @@ class PointGlassController {
   void changeCameraZoom(double scaleFactor) {
     if (_rendererPtr == null) return;
     radius = (radius * scaleFactor).clamp(0.1, double.infinity);
-    _updateCamera(_rendererPtr!, yaw, pitch, radius);
+    _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
     render();
   }
 }

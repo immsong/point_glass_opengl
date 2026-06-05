@@ -1,55 +1,76 @@
 use std::ffi::c_void;
 use std::ptr;
 
-// 1. Vertex Shader
+// 1. 위치, 색상, 크기를 모두 배열에서 받아오는 Vertex Shader
 const VERTEX_SHADER_SOURCE: &str = "#version 300 es\n\
     layout (location = 0) in vec3 aPos;\n\
+    layout (location = 1) in vec4 aColor;\n\
+    layout (location = 2) in float aSize;\n\
     uniform mat4 uMVP;\n\
+    out vec4 vColor;\n\
     void main() {\n\
         gl_Position = uMVP * vec4(aPos, 1.0);\n\
+        gl_PointSize = aSize;\n\
+        vColor = aColor;\n\
     }";
 
-// 2. 흰색 점을 칠하는 Fragment Shader
+// 2. 전달받은 색상과 투명도(Alpha)를 칠하는 Fragment Shader
 const FRAGMENT_SHADER_SOURCE: &str = "#version 300 es\n\
     precision mediump float;\n\
+    in vec4 vColor;\n\
     out vec4 FragColor;\n\
-    \n\
     void main() {\n\
-        FragColor = vec4(1.0, 1.0, 1.0, 1.0);\n\
+        FragColor = vColor;\n\
     }";
 
 pub struct Renderer {
     gl_loaded: bool,
     shader_program: u32,
-    vao: u32,
-    vbo: u32,
+
+    // 점, 선, 면 각각의 VAO, VBO 보관
+    vao_points: u32,
+    vbo_points: u32,
+    vao_lines: u32,
+    vbo_lines: u32,
+    vao_polys: u32,
+    vbo_polys: u32,
+
+    // Dart에서 받은 데이터 대기열 (정점 1개당 8개의 f32 사용)
     pending_points: Option<Vec<f32>>,
     point_count: i32,
+    pending_lines: Option<Vec<f32>>,
+    line_count: i32,
+    pending_polys: Option<Vec<f32>>,
+    poly_count: i32,
 
-    // 뷰포트 크기 (aspect ratio 계산용)
     width: u32,
     height: u32,
-
-    // 카메라 파라미터 (Orbit Camera: 회전각, 상하각, 거리)
     yaw: f32,
     pitch: f32,
     radius: f32,
-    roll: f32,     // Z축 회전 (Ctrl+드래그)
-    target_x: f32, // pan 기준점
+    roll: f32,
+    target_x: f32,
     target_y: f32,
     target_z: f32,
 }
 
 impl Renderer {
     pub fn new() -> Self {
-        println!("[Rust] Renderer created for 3D Orbit Camera!");
         Self {
             gl_loaded: false,
             shader_program: 0,
-            vao: 0,
-            vbo: 0,
+            vao_points: 0,
+            vbo_points: 0,
+            vao_lines: 0,
+            vbo_lines: 0,
+            vao_polys: 0,
+            vbo_polys: 0,
             pending_points: None,
             point_count: 0,
+            pending_lines: None,
+            line_count: 0,
+            pending_polys: None,
+            poly_count: 0,
             width: 1,
             height: 1,
             yaw: 0.0,
@@ -67,52 +88,58 @@ impl Renderer {
         let c_str = std::ffi::CString::new(source).unwrap();
         unsafe { gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null()) };
         unsafe { gl::CompileShader(shader) };
-
-        // 컴파일 에러 확인
-        let mut success: i32 = 0;
-        unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success) };
-        if success == 0 {
-            let mut log_len: i32 = 0;
-            unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_len) };
-            let mut log = vec![0u8; log_len as usize];
-            unsafe {
-                gl::GetShaderInfoLog(
-                    shader,
-                    log_len,
-                    ptr::null_mut(),
-                    log.as_mut_ptr() as *mut i8,
-                )
-            };
-            println!(
-                "[Rust] Shader compile error: {}",
-                String::from_utf8_lossy(&log)
-            );
-        }
         shader
     }
 
-    // 2. 카메라 위치를 기반으로 MVP 행렬 계산
+    // [X, Y, Z, R, G, B, A, Size] 형태의 Interleaved Buffer 구조를 세팅하는 헬퍼
+    unsafe fn setup_buffers(vao: &mut u32, vbo: &mut u32) {
+        unsafe { gl::GenVertexArrays(1, vao) };
+        unsafe { gl::GenBuffers(1, vbo) };
+        unsafe { gl::BindVertexArray(*vao) };
+        unsafe { gl::BindBuffer(gl::ARRAY_BUFFER, *vbo) };
+
+        let stride = (8 * std::mem::size_of::<f32>()) as i32;
+        // location = 0: aPos (vec3)
+        unsafe { gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null()) };
+        unsafe { gl::EnableVertexAttribArray(0) };
+        // location = 1: aColor (vec4)
+        unsafe {
+            gl::VertexAttribPointer(
+                1,
+                4,
+                gl::FLOAT,
+                gl::FALSE,
+                stride,
+                (3 * std::mem::size_of::<f32>()) as *const c_void,
+            )
+        };
+        unsafe { gl::EnableVertexAttribArray(1) };
+        // location = 2: aSize (float)
+        unsafe {
+            gl::VertexAttribPointer(
+                2,
+                1,
+                gl::FLOAT,
+                gl::FALSE,
+                stride,
+                (7 * std::mem::size_of::<f32>()) as *const c_void,
+            )
+        };
+        unsafe { gl::EnableVertexAttribArray(2) };
+
+        unsafe { gl::BindVertexArray(0) };
+    }
+
     fn calculate_mvp(&self) -> [f32; 16] {
-        // 구면 좌표계를 이용해 카메라의 X, Y, Z 위치 계산
+        // 1. 기존 카메라 뷰(View) 계산 (렌즈 회전인 roll 제거, 늘 똑바른 자세 유지)
         let eye_x = self.target_x + self.radius * self.pitch.cos() * self.yaw.sin();
         let eye_y = self.target_y + self.radius * self.pitch.sin();
         let eye_z = self.target_z + self.radius * self.pitch.cos() * self.yaw.cos();
 
-        // base up vector (gimbal lock 없음)
-        let base_up_x = -self.pitch.sin() * self.yaw.sin();
-        let base_up_y = self.pitch.cos();
-        let base_up_z = -self.pitch.sin() * self.yaw.cos();
-
-        // camera right vector (right_y = 0)
-        let right_x = self.yaw.cos();
-        let right_z = -self.yaw.sin();
-
-        // roll 적용: up = cos(roll)*base_up + sin(roll)*right
-        let cos_r = self.roll.cos();
-        let sin_r = self.roll.sin();
-        let up_x = cos_r * base_up_x + sin_r * right_x;
-        let up_y = cos_r * base_up_y; // right_y = 0
-        let up_z = cos_r * base_up_z + sin_r * right_z;
+        // 기둥(Up) 벡터는 무조건 월드 Y축 기준으로 고정
+        let up_x = -self.pitch.sin() * self.yaw.sin();
+        let up_y = self.pitch.cos();
+        let up_z = -self.pitch.sin() * self.yaw.cos();
 
         let view = look_at(
             [eye_x, eye_y, eye_z],
@@ -122,7 +149,21 @@ impl Renderer {
         let aspect = self.width as f32 / self.height.max(1) as f32;
         let proj = perspective(45.0f32.to_radians(), aspect, 0.1, 1_000_000.0);
 
-        multiply_matrices(proj, view)
+        let vp = multiply_matrices(proj, view);
+
+        // 2. 월드 Z축 회전 행렬 (Model Matrix)
+        // Dart에서 받는 roll 값을 이제 "3D 공간 전체의 Z축 회전각"으로 사용합니다.
+        let cos_z = self.roll.cos();
+        let sin_z = self.roll.sin();
+        let model = [
+            cos_z, sin_z, 0.0, 0.0, // Column 0
+            -sin_z, cos_z, 0.0, 0.0, // Column 1
+            0.0, 0.0, 1.0, 0.0, // Column 2
+            0.0, 0.0, 0.0, 1.0, // Column 3
+        ];
+
+        // 3. 최종 행렬 완성: MVP = Proj * View * Model
+        multiply_matrices(vp, model)
     }
 
     pub fn render(&mut self) {
@@ -132,11 +173,8 @@ impl Renderer {
                 let libegl = libc::dlopen(b"libEGL.so.1\0".as_ptr() as *const _, libc::RTLD_LAZY);
                 gl::load_with(|name| {
                     let symbol = std::ffi::CString::new(name).unwrap();
-                    let mut p = ptr::null_mut();
-                    if !libgl.is_null() {
-                        p = libc::dlsym(libgl, symbol.as_ptr());
-                    }
-                    if p.is_null() && !libegl.is_null() {
+                    let mut p = libc::dlsym(libgl, symbol.as_ptr());
+                    if p.is_null() {
                         p = libc::dlsym(libegl, symbol.as_ptr());
                     }
                     if p.is_null() {
@@ -153,72 +191,86 @@ impl Renderer {
                 gl::AttachShader(self.shader_program, fragment_shader);
                 gl::LinkProgram(self.shader_program);
 
-                // 링크 에러 확인
-                let mut link_ok: i32 = 0;
-                gl::GetProgramiv(self.shader_program, gl::LINK_STATUS, &mut link_ok);
-                if link_ok == 0 {
-                    let mut log_len: i32 = 0;
-                    gl::GetProgramiv(self.shader_program, gl::INFO_LOG_LENGTH, &mut log_len);
-                    let mut log = vec![0u8; log_len as usize];
-                    gl::GetProgramInfoLog(
-                        self.shader_program,
-                        log_len,
-                        ptr::null_mut(),
-                        log.as_mut_ptr() as *mut i8,
-                    );
-                    println!(
-                        "[Rust] Program link error: {}",
-                        String::from_utf8_lossy(&log)
-                    );
-                } else {
-                    println!("[Rust] Shader program linked successfully.");
-                }
+                Self::setup_buffers(&mut self.vao_points, &mut self.vbo_points);
+                Self::setup_buffers(&mut self.vao_lines, &mut self.vbo_lines);
+                Self::setup_buffers(&mut self.vao_polys, &mut self.vbo_polys);
 
-                gl::DeleteShader(vertex_shader);
-                gl::DeleteShader(fragment_shader);
-
-                gl::GenVertexArrays(1, &mut self.vao);
-                gl::GenBuffers(1, &mut self.vbo);
                 gl::Enable(gl::PROGRAM_POINT_SIZE);
+                gl::Enable(gl::DEPTH_TEST); // 깊이 테스트 켜기 (진짜 3D 공간을 위해)
+                gl::Enable(gl::BLEND); // 알파(투명도) 블렌딩 켜기
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
                 self.gl_loaded = true;
             }
 
-            if let Some(points) = self.pending_points.take() {
-                self.point_count = (points.len() / 3) as i32;
-                gl::BindVertexArray(self.vao);
-                gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-
-                // 💡 핵심: STATIC_DRAW(고정) -> STREAM_DRAW(실시간 스트리밍 최적화) 로 변경!
-                gl::BufferData(
-                    gl::ARRAY_BUFFER,
-                    (points.len() * 4) as isize,
-                    points.as_ptr() as *const c_void,
-                    gl::STREAM_DRAW,
-                );
-
-                gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 0, ptr::null());
-                gl::EnableVertexAttribArray(0);
-            }
+            // GPU 데이터 업로드 로직 (수신된 데이터가 있을 때만 갱신)
+            let upload_data =
+                |pending: &mut Option<Vec<f32>>, vao: u32, vbo: u32, count: &mut i32| {
+                    if let Some(data) = pending.take() {
+                        *count = (data.len() / 8) as i32; // 정점당 8 float
+                        gl::BindVertexArray(vao);
+                        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+                        gl::BufferData(
+                            gl::ARRAY_BUFFER,
+                            (data.len() * 4) as isize,
+                            data.as_ptr() as *const c_void,
+                            gl::STATIC_DRAW,
+                        );
+                    }
+                };
+            upload_data(
+                &mut self.pending_points,
+                self.vao_points,
+                self.vbo_points,
+                &mut self.point_count,
+            );
+            upload_data(
+                &mut self.pending_lines,
+                self.vao_lines,
+                self.vbo_lines,
+                &mut self.line_count,
+            );
+            upload_data(
+                &mut self.pending_polys,
+                self.vao_polys,
+                self.vbo_polys,
+                &mut self.poly_count,
+            );
 
             gl::ClearColor(0.1, 0.1, 0.1, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); // Depth 버퍼도 함께 Clear
 
-            if self.point_count > 0 {
+            if self.point_count > 0 || self.line_count > 0 || self.poly_count > 0 {
                 gl::UseProgram(self.shader_program);
                 let mvp = self.calculate_mvp();
                 let mvp_loc =
                     gl::GetUniformLocation(self.shader_program, b"uMVP\0".as_ptr() as *const i8);
                 gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
 
-                gl::BindVertexArray(self.vao);
-                gl::DrawArrays(gl::LINES, 0, self.point_count);
+                // 1. 면(Polygons) 먼저 그리기
+                if self.poly_count > 0 {
+                    gl::BindVertexArray(self.vao_polys);
+                    gl::DrawArrays(gl::TRIANGLES, 0, self.poly_count);
+                }
+                // 2. 선(Lines) 그리기
+                if self.line_count > 0 {
+                    gl::BindVertexArray(self.vao_lines);
+                    gl::DrawArrays(gl::LINES, 0, self.line_count);
+                }
+                // 3. 점(Points) 그리기
+                if self.point_count > 0 {
+                    gl::BindVertexArray(self.vao_points);
+                    gl::DrawArrays(gl::POINTS, 0, self.point_count);
+                }
+
+                gl::BindVertexArray(0);
+                gl::UseProgram(0);
             }
         }
     }
 }
 
-// --- 4x4 행렬 연산 헬퍼 함수들 ---
+// --- 4x4 행렬 연산 ---
 fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let f = {
         let r = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
@@ -239,7 +291,6 @@ fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [f32; 16] {
         s[2] * f[0] - s[0] * f[2],
         s[0] * f[1] - s[1] * f[0],
     ];
-
     [
         s[0],
         u[0],
@@ -283,8 +334,6 @@ fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
 }
 
 fn multiply_matrices(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
-    // column-major: element (row, col) = arr[col*4 + row]
-    // C = A*B → C[col*4+row] = sum_k a[k*4+row] * b[col*4+k]
     let mut res = [0.0f32; 16];
     for col in 0..4 {
         for row in 0..4 {
@@ -305,60 +354,74 @@ pub extern "C" fn create_renderer() -> *mut c_void {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn render_frame(renderer_ptr: *mut c_void) {
-    if renderer_ptr.is_null() {
-        return;
+    if !renderer_ptr.is_null() {
+        unsafe { &mut *(renderer_ptr as *mut Renderer) }.render();
     }
-    unsafe { &mut *(renderer_ptr as *mut Renderer) }.render();
 }
 
+// 새로운 3개의 데이터 입력 인터페이스 (점, 선, 면)
 #[unsafe(no_mangle)]
 pub extern "C" fn set_points(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
-    if renderer_ptr.is_null() || data_ptr.is_null() {
-        return;
+    if !renderer_ptr.is_null() && !data_ptr.is_null() {
+        unsafe { &mut *(renderer_ptr as *mut Renderer) }.pending_points =
+            Some(unsafe { std::slice::from_raw_parts(data_ptr, length) }.to_vec());
     }
-    let slice = unsafe { std::slice::from_raw_parts(data_ptr, length) };
-    unsafe { &mut *(renderer_ptr as *mut Renderer) }.pending_points = Some(slice.to_vec());
 }
 
-// Dart에서 카메라 제어 신호를 받을 새로운 FFI 함수
 #[unsafe(no_mangle)]
-pub extern "C" fn update_camera(renderer_ptr: *mut c_void, yaw: f32, pitch: f32, radius: f32) {
-    if renderer_ptr.is_null() {
-        return;
+pub extern "C" fn set_lines(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
+    if !renderer_ptr.is_null() && !data_ptr.is_null() {
+        unsafe { &mut *(renderer_ptr as *mut Renderer) }.pending_lines =
+            Some(unsafe { std::slice::from_raw_parts(data_ptr, length) }.to_vec());
     }
-    let renderer = unsafe { &mut *(renderer_ptr as *mut Renderer) };
-    renderer.yaw = yaw;
-    renderer.pitch = pitch.clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
-    renderer.radius = radius.max(0.1_f32); // 줌 최소값만 제한
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn set_polygons(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
+    if !renderer_ptr.is_null() && !data_ptr.is_null() {
+        unsafe { &mut *(renderer_ptr as *mut Renderer) }.pending_polys =
+            Some(unsafe { std::slice::from_raw_parts(data_ptr, length) }.to_vec());
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn update_camera(
+    renderer_ptr: *mut c_void,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    radius: f32,
+) {
+    if !renderer_ptr.is_null() {
+        let r = unsafe { &mut *(renderer_ptr as *mut Renderer) };
+        r.yaw = yaw;
+        r.pitch = pitch;
+        r.roll = roll;
+        r.radius = radius.max(0.1_f32);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn resize_renderer(renderer_ptr: *mut c_void, width: u32, height: u32) {
-    if renderer_ptr.is_null() {
-        return;
+    if !renderer_ptr.is_null() {
+        let r = unsafe { &mut *(renderer_ptr as *mut Renderer) };
+        r.width = width.max(1);
+        r.height = height.max(1);
     }
-    let renderer = unsafe { &mut *(renderer_ptr as *mut Renderer) };
-    renderer.width = width.max(1);
-    renderer.height = height.max(1);
 }
 
-/// Shift+드래그: 카메라 target을 스크린 평면 방향으로 이동
 #[unsafe(no_mangle)]
 pub extern "C" fn pan_camera(renderer_ptr: *mut c_void, dx: f32, dy: f32) {
-    if renderer_ptr.is_null() {
-        return;
+    if !renderer_ptr.is_null() {
+        let r = unsafe { &mut *(renderer_ptr as *mut Renderer) };
+        let right_x = r.yaw.cos();
+        let right_z = -r.yaw.sin();
+        let up_x = -r.pitch.sin() * r.yaw.sin();
+        let up_y = r.pitch.cos();
+        let up_z = -r.pitch.sin() * r.yaw.cos();
+        let scale = r.radius * 0.001;
+        r.target_x += (right_x * dx - up_x * dy) * scale;
+        r.target_y += (-up_y * dy) * scale;
+        r.target_z += (right_z * dx - up_z * dy) * scale;
     }
-    let r = unsafe { &mut *(renderer_ptr as *mut Renderer) };
-    // camera right: (yaw.cos(), 0, -yaw.sin())
-    let right_x = r.yaw.cos();
-    let right_z = -r.yaw.sin();
-    // camera up (pitch 접선)
-    let up_x = -r.pitch.sin() * r.yaw.sin();
-    let up_y = r.pitch.cos();
-    let up_z = -r.pitch.sin() * r.yaw.cos();
-    // 민감도: radius에 비례
-    let scale = r.radius * 0.002;
-    r.target_x += (right_x * dx - up_x * dy) * scale;
-    r.target_y += (-up_y * dy) * scale;
-    r.target_z += (right_z * dx - up_z * dy) * scale;
 }
