@@ -7,16 +7,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ffi/ffi.dart';
 
-// Rust Core와 통신할 FFI 함수들 (간이 선언)
 typedef CreateRendererC = Pointer<Void> Function();
 typedef CreateRendererDart = Pointer<Void> Function();
-
 typedef RenderFrameC = Void Function(Pointer<Void> renderer);
 typedef RenderFrameDart = void Function(Pointer<Void> renderer);
 
-typedef SetPointsC =
+// 💡 공통 데이터 전송 FFI
+typedef SetDataC =
     Void Function(Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
-typedef SetPointsDart =
+typedef SetDataDart =
     void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
 
 typedef UpdateCameraC =
@@ -35,20 +34,13 @@ typedef UpdateCameraDart =
       double roll,
       double radius,
     );
-
 typedef ResizeRendererC =
     Void Function(Pointer<Void> renderer, Uint32 width, Uint32 height);
 typedef ResizeRendererDart =
     void Function(Pointer<Void> renderer, int width, int height);
-
 typedef PanCameraC = Void Function(Pointer<Void> renderer, Float dx, Float dy);
 typedef PanCameraDart =
     void Function(Pointer<Void> renderer, double dx, double dy);
-
-typedef SetDataC =
-    Void Function(Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
-typedef SetDataDart =
-    void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
 
 class PointGlassController {
   static const MethodChannel _channel = MethodChannel('point_glass_opengl');
@@ -57,14 +49,16 @@ class PointGlassController {
   int? textureId;
   late DynamicLibrary _dylib;
   late CreateRendererDart _createRenderer;
+
+  // 💡 3가지 바인딩 함수
   late SetDataDart _setPoints;
   late SetDataDart _setLines;
   late SetDataDart _setPolygons;
+
   late UpdateCameraDart _updateCamera;
   late ResizeRendererDart _resizeRenderer;
   late PanCameraDart _panCamera;
 
-  // 카메라 상태값 보관
   double yaw = pi;
   double pitch = pi;
   double roll = 0.0;
@@ -80,8 +74,6 @@ class PointGlassController {
     _createRenderer = _dylib
         .lookup<NativeFunction<CreateRendererC>>('create_renderer')
         .asFunction();
-
-    // 점, 선, 면 3가지 바인딩
     _setPoints = _dylib
         .lookup<NativeFunction<SetDataC>>('set_points')
         .asFunction();
@@ -91,33 +83,24 @@ class PointGlassController {
     _setPolygons = _dylib
         .lookup<NativeFunction<SetDataC>>('set_polygons')
         .asFunction();
-
     _updateCamera = _dylib
         .lookup<NativeFunction<UpdateCameraC>>('update_camera')
         .asFunction();
-
     _resizeRenderer = _dylib
         .lookup<NativeFunction<ResizeRendererC>>('resize_renderer')
         .asFunction();
-
     _panCamera = _dylib
         .lookup<NativeFunction<PanCameraC>>('pan_camera')
         .asFunction();
 
-    // 포인터 주소를 C++로 넘기기 위해 함수 레퍼런스도 추출합니다.
     final renderFuncPointer = _dylib.lookup<NativeFunction<RenderFrameC>>(
       'render_frame',
     );
 
     _rendererPtr = _createRenderer();
-
-    // Dart의 초기 카메라 값을 Rust에 즉시 적용
     _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
-
-    // Rust Renderer에 초기 크기 전달
     _resizeRenderer(_rendererPtr!, width, height);
 
-    // C++에 Texture 생성을 요청하면서 Rust 메모리 주소와 초기 해상도를 함께 전달
     textureId = await _channel.invokeMethod<int>('createTexture', {
       'rendererPtr': _rendererPtr!.address,
       'renderFuncPtr': renderFuncPointer.address,
@@ -127,11 +110,7 @@ class PointGlassController {
   }
 
   Future<void> resize(int width, int height) async {
-    if (textureId == null || _rendererPtr == null) {
-      return;
-    }
-
-    // Rust에 직접 크기 전달 (FFI, MethodChannel 거치지 않음)
+    if (textureId == null || _rendererPtr == null) return;
     _resizeRenderer(_rendererPtr!, width, height);
     await _channel.invokeMethod('resizeTexture', {
       'width': width,
@@ -142,12 +121,11 @@ class PointGlassController {
 
   void render() {
     if (textureId != null) {
-      // FFI 직접 호출 대신, C++에 렌더링 신호 전송
       _channel.invokeMethod('requestRender');
     }
   }
 
-  // 내부 헬퍼 함수: 메모리 할당 및 FFI 호출을 깔끔하게 처리
+  // 내부 통신 헬퍼
   void _sendDataToRust(SetDataDart ffiFunc, Float32List data) {
     if (_rendererPtr == null || data.isEmpty) return;
     final pointer = calloc<Float>(data.length);
@@ -156,7 +134,7 @@ class PointGlassController {
     calloc.free(pointer);
   }
 
-  // 💡 사용자가 호출할 완벽한 범용 API 3개 완성!
+  // 💡 사용자가 호출할 완벽한 범용 API 3개!
   void setPoints(Float32List points) {
     _sendDataToRust(_setPoints, points);
     render();
@@ -172,44 +150,27 @@ class PointGlassController {
     render();
   }
 
-  // 마우스 드래그로 시점 회전
   void changeCameraAngle(double deltaX, double deltaY) {
-    if (_rendererPtr == null) {
-      return;
-    }
-
-    // 좌우 드래그
-    yaw = (yaw + (deltaX * 0.0015)).clamp(0, pi * 2);
-
-    // 상하 드래그
+    if (_rendererPtr == null) return;
+    yaw = (yaw + (deltaX * 0.0015)) % (pi * 2);
     pitch = (pitch - deltaY * 0.003).clamp(pi, pi * 2);
-
     _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
     render();
   }
 
-  // Ctrl+드래그: 카메라 roll (Z축 회전)
   void rollCamera(double deltaZ) {
-    if (_rendererPtr == null) {
-      return;
-    }
-
+    if (_rendererPtr == null) return;
     roll = (roll + (deltaZ * 0.0015)) % (pi * 2);
     _updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
     render();
   }
 
-  // Shift+드래그: 카메라 pan (평행 이동)
   void panCamera(double screenDx, double screenDy) {
-    if (_rendererPtr == null) {
-      return;
-    }
-
+    if (_rendererPtr == null) return;
     _panCamera(_rendererPtr!, screenDx.toDouble(), screenDy.toDouble());
     render();
   }
 
-  // 휠 스크롤로 줌인/줌아웃 (배율 기반: 0.9 = 축소, 1.1 = 확대)
   void changeCameraZoom(double scaleFactor) {
     if (_rendererPtr == null) return;
     radius = (radius * scaleFactor).clamp(0.1, double.infinity);
@@ -218,7 +179,6 @@ class PointGlassController {
   }
 }
 
-// 사용자에게 노출될 Flutter View 위젯
 class PointGlassView extends StatefulWidget {
   final PointGlassController controller;
   final VoidCallback? onInitialized;

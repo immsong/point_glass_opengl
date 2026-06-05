@@ -72,14 +72,19 @@ class _PointGlassExampleState extends State<PointGlassExample> {
     final rand = Random();
     for (int i = 0; i < 500; i++) {
       double x = (rand.nextDouble() * 10) - 5.0;
-      double y = (rand.nextDouble() * 5);
-      double z = (rand.nextDouble() * 10) - 5.0;
+      double y = (rand.nextDouble() * 10) - 5.0;
+      double z = (rand.nextDouble() * 5);
 
       // 색상과 크기(3.0 ~ 8.0)도 무작위
       pointVerts.addAll([
-        x, y, z,
-        rand.nextDouble(), rand.nextDouble(), rand.nextDouble(), 1.0, // 무작위 RGB
-        (rand.nextDouble() * 5.0) + 3.0, // 무작위 크기
+        x,
+        y,
+        z,
+        rand.nextDouble(),
+        rand.nextDouble(),
+        rand.nextDouble(),
+        1.0,
+        (rand.nextDouble() * 5.0) + 3.0,
       ]);
     }
     _controller.setPoints(Float32List.fromList(pointVerts));
@@ -97,17 +102,14 @@ class _PointGlassExampleState extends State<PointGlassExample> {
       setState(() {
         _isShiftPressed = event is KeyDownEvent || event is KeyRepeatEvent;
       });
-
       return true;
     } else if (event.logicalKey == LogicalKeyboardKey.controlLeft ||
         event.logicalKey == LogicalKeyboardKey.controlRight) {
       setState(() {
         _isCtrlPressed = event is KeyDownEvent || event is KeyRepeatEvent;
       });
-
       return true;
     }
-
     return false;
   }
 
@@ -137,8 +139,10 @@ class _PointGlassExampleState extends State<PointGlassExample> {
                 } else if (_isCtrlPressed) {
                   _controller.rollCamera(-event.delta.dx);
                 } else if (event.buttons == kPrimaryMouseButton) {
-                  _controller.changeCameraAngle(-event.delta.dx, 0.0);
-                  _controller.changeCameraAngle(0.0, event.delta.dy);
+                  _controller.changeCameraAngle(
+                    -event.delta.dx,
+                    event.delta.dy,
+                  );
                 }
               },
               child: PointGlassView(

@@ -14,7 +14,7 @@ const VERTEX_SHADER_SOURCE: &str = "#version 300 es\n\
         vColor = aColor;\n\
     }";
 
-// 2. 전달받은 색상과 투명도(Alpha)를 칠하는 Fragment Shader
+// 2. 전달받은 색상과 투명도를 칠하는 Fragment Shader
 const FRAGMENT_SHADER_SOURCE: &str = "#version 300 es\n\
     precision mediump float;\n\
     in vec4 vColor;\n\
@@ -27,7 +27,7 @@ pub struct Renderer {
     gl_loaded: bool,
     shader_program: u32,
 
-    // 점, 선, 면 각각의 VAO, VBO 보관
+    // 점, 선, 면 각각의 VAO, VBO
     vao_points: u32,
     vbo_points: u32,
     vao_lines: u32,
@@ -35,7 +35,6 @@ pub struct Renderer {
     vao_polys: u32,
     vbo_polys: u32,
 
-    // Dart에서 받은 데이터 대기열 (정점 1개당 8개의 f32 사용)
     pending_points: Option<Vec<f32>>,
     point_count: i32,
     pending_lines: Option<Vec<f32>>,
@@ -91,7 +90,7 @@ impl Renderer {
         shader
     }
 
-    // [X, Y, Z, R, G, B, A, Size] 형태의 Interleaved Buffer 구조를 세팅하는 헬퍼
+    // [X, Y, Z, R, G, B, A, Size] 형태의 버퍼 세팅
     unsafe fn setup_buffers(vao: &mut u32, vbo: &mut u32) {
         unsafe { gl::GenVertexArrays(1, vao) };
         unsafe { gl::GenBuffers(1, vbo) };
@@ -99,44 +98,25 @@ impl Renderer {
         unsafe { gl::BindBuffer(gl::ARRAY_BUFFER, *vbo) };
 
         let stride = (8 * std::mem::size_of::<f32>()) as i32;
-        // location = 0: aPos (vec3)
         unsafe { gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null()) };
         unsafe { gl::EnableVertexAttribArray(0) };
-        // location = 1: aColor (vec4)
         unsafe {
-            gl::VertexAttribPointer(
-                1,
-                4,
-                gl::FLOAT,
-                gl::FALSE,
-                stride,
-                (3 * std::mem::size_of::<f32>()) as *const c_void,
-            )
+            gl::VertexAttribPointer(1, 4, gl::FLOAT, gl::FALSE, stride, (3 * 4) as *const c_void)
         };
         unsafe { gl::EnableVertexAttribArray(1) };
-        // location = 2: aSize (float)
         unsafe {
-            gl::VertexAttribPointer(
-                2,
-                1,
-                gl::FLOAT,
-                gl::FALSE,
-                stride,
-                (7 * std::mem::size_of::<f32>()) as *const c_void,
-            )
+            gl::VertexAttribPointer(2, 1, gl::FLOAT, gl::FALSE, stride, (7 * 4) as *const c_void)
         };
         unsafe { gl::EnableVertexAttribArray(2) };
-
         unsafe { gl::BindVertexArray(0) };
     }
 
     fn calculate_mvp(&self) -> [f32; 16] {
-        // 1. 기존 카메라 뷰(View) 계산 (렌즈 회전인 roll 제거, 늘 똑바른 자세 유지)
+        // 1. 카메라 뷰(View) 계산 (렌즈 회전 제외)
         let eye_x = self.target_x + self.radius * self.pitch.cos() * self.yaw.sin();
         let eye_y = self.target_y + self.radius * self.pitch.sin();
         let eye_z = self.target_z + self.radius * self.pitch.cos() * self.yaw.cos();
 
-        // 기둥(Up) 벡터는 무조건 월드 Y축 기준으로 고정
         let up_x = -self.pitch.sin() * self.yaw.sin();
         let up_y = self.pitch.cos();
         let up_z = -self.pitch.sin() * self.yaw.cos();
@@ -151,18 +131,14 @@ impl Renderer {
 
         let vp = multiply_matrices(proj, view);
 
-        // 2. 월드 Z축 회전 행렬 (Model Matrix)
-        // Dart에서 받는 roll 값을 이제 "3D 공간 전체의 Z축 회전각"으로 사용합니다.
+        // 💡 2. 월드 Z축 회전 행렬 (Model Matrix - 턴테이블 효과)
         let cos_z = self.roll.cos();
         let sin_z = self.roll.sin();
         let model = [
-            cos_z, sin_z, 0.0, 0.0, // Column 0
-            -sin_z, cos_z, 0.0, 0.0, // Column 1
-            0.0, 0.0, 1.0, 0.0, // Column 2
-            0.0, 0.0, 0.0, 1.0, // Column 3
+            cos_z, sin_z, 0.0, 0.0, -sin_z, cos_z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
 
-        // 3. 최종 행렬 완성: MVP = Proj * View * Model
+        // 3. 최종 MVP (Proj * View * Model)
         multiply_matrices(vp, model)
     }
 
@@ -196,18 +172,17 @@ impl Renderer {
                 Self::setup_buffers(&mut self.vao_polys, &mut self.vbo_polys);
 
                 gl::Enable(gl::PROGRAM_POINT_SIZE);
-                gl::Enable(gl::DEPTH_TEST); // 깊이 테스트 켜기 (진짜 3D 공간을 위해)
-                gl::Enable(gl::BLEND); // 알파(투명도) 블렌딩 켜기
+                gl::Enable(gl::DEPTH_TEST); // 💡 깊이 테스트 활성화
+                gl::Enable(gl::BLEND); // 💡 알파 블렌딩 활성화
                 gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
                 self.gl_loaded = true;
             }
 
-            // GPU 데이터 업로드 로직 (수신된 데이터가 있을 때만 갱신)
             let upload_data =
                 |pending: &mut Option<Vec<f32>>, vao: u32, vbo: u32, count: &mut i32| {
                     if let Some(data) = pending.take() {
-                        *count = (data.len() / 8) as i32; // 정점당 8 float
+                        *count = (data.len() / 8) as i32; // 8 float per vertex
                         gl::BindVertexArray(vao);
                         gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
                         gl::BufferData(
@@ -237,30 +212,44 @@ impl Renderer {
                 &mut self.poly_count,
             );
 
-            gl::ClearColor(0.1, 0.1, 0.1, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); // Depth 버퍼도 함께 Clear
+            // 1. 지우기 전에 무조건 모든 버퍼에 대한 쓰기 권한을 풀어줍니다!
+            // (이전 프레임에서 폴리곤을 그리며 꺼두었던 DepthMask 때문에 화면이 안 지워질 수 있음)
+            gl::DepthMask(gl::TRUE);
+            gl::ColorMask(gl::TRUE, gl::TRUE, gl::TRUE, gl::TRUE);
+
+            // 2. 도화지를 완벽하게 지웁니다.
+            gl::ClearColor(0.1, 0.1, 0.1, 1.0); // 배경색 지정
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); // 색상과 깊이를 모두 날림
 
             if self.point_count > 0 || self.line_count > 0 || self.poly_count > 0 {
                 gl::UseProgram(self.shader_program);
+
+                // 3. 투명도(Alpha) 설정 변경 (Flutter 렌더링 충돌 방지의 핵심!)
+                gl::Enable(gl::BLEND);
+                // 색상(RGB)은 자연스럽게 섞되, 도화지의 투명도(Alpha)는 무조건 기존값(1.0)으로 유지합니다.
+                gl::BlendFuncSeparate(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::ZERO, gl::ONE);
+
                 let mvp = self.calculate_mvp();
                 let mvp_loc =
                     gl::GetUniformLocation(self.shader_program, b"uMVP\0".as_ptr() as *const i8);
                 gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
 
-                // 1. 면(Polygons) 먼저 그리기
-                if self.poly_count > 0 {
-                    gl::BindVertexArray(self.vao_polys);
-                    gl::DrawArrays(gl::TRIANGLES, 0, self.poly_count);
-                }
-                // 2. 선(Lines) 그리기
+                // 1. 선(Lines) 그리기 (불투명)
                 if self.line_count > 0 {
                     gl::BindVertexArray(self.vao_lines);
                     gl::DrawArrays(gl::LINES, 0, self.line_count);
                 }
-                // 3. 점(Points) 그리기
+                // 2. 점(Points) 그리기 (불투명)
                 if self.point_count > 0 {
                     gl::BindVertexArray(self.vao_points);
                     gl::DrawArrays(gl::POINTS, 0, self.point_count);
+                }
+                // 💡 3. 면(Polygons) 그리기 (반투명은 가장 나중에, Z-buffer 쓰기 방지)
+                if self.poly_count > 0 {
+                    gl::DepthMask(gl::FALSE);
+                    gl::BindVertexArray(self.vao_polys);
+                    gl::DrawArrays(gl::TRIANGLES, 0, self.poly_count);
+                    gl::DepthMask(gl::TRUE);
                 }
 
                 gl::BindVertexArray(0);
@@ -270,7 +259,6 @@ impl Renderer {
     }
 }
 
-// --- 4x4 행렬 연산 ---
 fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let f = {
         let r = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
@@ -310,7 +298,6 @@ fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [f32; 16] {
         1.0,
     ]
 }
-
 fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
     let g = 1.0 / (fovy * 0.5).tan();
     [
@@ -332,7 +319,6 @@ fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
         0.0,
     ]
 }
-
 fn multiply_matrices(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     let mut res = [0.0f32; 16];
     for col in 0..4 {
@@ -346,12 +332,10 @@ fn multiply_matrices(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     res
 }
 
-// --- FFI 인터페이스 ---
 #[unsafe(no_mangle)]
 pub extern "C" fn create_renderer() -> *mut c_void {
     Box::into_raw(Box::new(Renderer::new())) as *mut c_void
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn render_frame(renderer_ptr: *mut c_void) {
     if !renderer_ptr.is_null() {
@@ -359,7 +343,7 @@ pub extern "C" fn render_frame(renderer_ptr: *mut c_void) {
     }
 }
 
-// 새로운 3개의 데이터 입력 인터페이스 (점, 선, 면)
+// 💡 3가지 만능 데이터 입력 포트
 #[unsafe(no_mangle)]
 pub extern "C" fn set_points(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
     if !renderer_ptr.is_null() && !data_ptr.is_null() {
@@ -367,7 +351,6 @@ pub extern "C" fn set_points(renderer_ptr: *mut c_void, data_ptr: *const f32, le
             Some(unsafe { std::slice::from_raw_parts(data_ptr, length) }.to_vec());
     }
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn set_lines(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
     if !renderer_ptr.is_null() && !data_ptr.is_null() {
@@ -375,7 +358,6 @@ pub extern "C" fn set_lines(renderer_ptr: *mut c_void, data_ptr: *const f32, len
             Some(unsafe { std::slice::from_raw_parts(data_ptr, length) }.to_vec());
     }
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn set_polygons(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
     if !renderer_ptr.is_null() && !data_ptr.is_null() {
@@ -400,7 +382,6 @@ pub extern "C" fn update_camera(
         r.radius = radius.max(0.1_f32);
     }
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn resize_renderer(renderer_ptr: *mut c_void, width: u32, height: u32) {
     if !renderer_ptr.is_null() {
@@ -409,7 +390,6 @@ pub extern "C" fn resize_renderer(renderer_ptr: *mut c_void, width: u32, height:
         r.height = height.max(1);
     }
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn pan_camera(renderer_ptr: *mut c_void, dx: f32, dy: f32) {
     if !renderer_ptr.is_null() {
