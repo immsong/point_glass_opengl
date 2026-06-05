@@ -1,9 +1,8 @@
-import 'dart:math';
 import 'dart:typed_data';
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 
 import 'package:point_glass_opengl/point_glass_opengl.dart';
 
@@ -35,50 +34,53 @@ class PointGlassExample extends StatefulWidget {
 class _PointGlassExampleState extends State<PointGlassExample> {
   final PointGlassController _controller = PointGlassController();
 
-  Timer? _streamingTimer;
-  bool _isStreaming = false;
-  double _time = 0.0;
+  bool _isShiftPressed = false;
+  bool _isCtrlPressed = false;
 
-  // 출렁이는 3D 파도(Wave) 데이터를 생성하는 함수
-  Float32List _generateWavePoints(double timeOffset) {
-    int count = 30000;
-    final points = Float32List(count * 3);
-    final rand = Random(42); // 위치가 무작위로 튀지 않도록 시드 고정
-
-    for (int i = 0; i < count; i++) {
-      // 넓게 퍼진 X, Z 좌표
-      double x = (rand.nextDouble() * 4.0) - 2.0;
-      double z = (rand.nextDouble() * 4.0) - 2.0;
-      // 시간에 따라 출렁이는 Y(높이) 좌표 계산 (사인 파동)
-      double y = sin(x * 3.0 + timeOffset) * cos(z * 3.0 + timeOffset) * 0.3;
-
-      points[i * 3] = x;
-      points[i * 3 + 1] = y;
-      points[i * 3 + 2] = z;
+  // 10x10 격자 (XZ 평면, y=0)
+  static Float32List _generateGridLines() {
+    const int count = 10;
+    const double half = count / 2.0;
+    final List<double> verts = [];
+    for (int i = 0; i <= count; i++) {
+      final double t = -half + i.toDouble();
+      verts.addAll([-half, 0.0, t, half, 0.0, t]); // X축 방향 선
+      verts.addAll([t, 0.0, -half, t, 0.0, half]); // Z축 방향 선
     }
-    return points;
+    return Float32List.fromList(verts);
   }
 
-  void _toggleStreaming() {
-    if (_isStreaming) {
-      _streamingTimer?.cancel();
-    } else {
-      // 대략 30FPS (33ms) 속도로 끊임없이 데이터를 밀어넣습니다!
-      _streamingTimer = Timer.periodic(const Duration(milliseconds: 33), (
-        timer,
-      ) {
-        _time += 0.1;
-        _controller.updatePoints(_generateWavePoints(_time));
+  void _loadGrid() {
+    _controller.updatePoints(_generateGridLines());
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    ServicesBinding.instance.keyboard.addHandler(_handleKeyEvent);
+  }
+
+  bool _handleKeyEvent(KeyEvent event) {
+    if (event.logicalKey == LogicalKeyboardKey.shiftLeft ||
+        event.logicalKey == LogicalKeyboardKey.shiftRight) {
+      setState(() {
+        _isShiftPressed = event is KeyDownEvent || event is KeyRepeatEvent;
       });
+      return true;
     }
-    setState(() {
-      _isStreaming = !_isStreaming;
-    });
+    if (event.logicalKey == LogicalKeyboardKey.controlLeft ||
+        event.logicalKey == LogicalKeyboardKey.controlRight) {
+      setState(() {
+        _isCtrlPressed = event is KeyDownEvent || event is KeyRepeatEvent;
+      });
+      return true;
+    }
+    return false;
   }
 
   @override
   void dispose() {
-    _streamingTimer?.cancel();
+    ServicesBinding.instance.keyboard.removeHandler(_handleKeyEvent);
     super.dispose();
   }
 
@@ -90,46 +92,27 @@ class _PointGlassExampleState extends State<PointGlassExample> {
           child: Padding(
             padding: const EdgeInsets.all(16.0),
             child: Listener(
-              onPointerSignal: (pointerSignal) {
-                if (pointerSignal is PointerScrollEvent) {
-                  _controller.changeCameraZoom(
-                    pointerSignal.scrollDelta.dy * 0.01,
-                  );
+              onPointerSignal: (event) {
+                if (event is PointerScrollEvent) {
+                  final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 0.9;
+                  _controller.changeCameraZoom(scaleFactor);
                 }
               },
-              child: GestureDetector(
-                onPanUpdate: (details) {
-                  _controller.changeCameraAngle(
-                    details.delta.dx,
-                    details.delta.dy,
-                  );
-                },
-                child: AspectRatio(
-                  aspectRatio: 1.0,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: PointGlassView(controller: _controller),
-                  ),
-                ),
+              onPointerMove: (event) {
+                if (_isShiftPressed) {
+                  _controller.panCamera(-event.delta.dx, event.delta.dy);
+                } else if (event.buttons == kPrimaryMouseButton) {
+                  // if (_isCtrlPressed) {
+                  _controller.changeCameraAngle(-event.delta.dx, 0.0);
+                  // } else {
+                  _controller.changeCameraAngle(0.0, event.delta.dy);
+                  // }
+                }
+              },
+              child: PointGlassView(
+                controller: _controller,
+                onInitialized: _loadGrid,
               ),
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(bottom: 30.0),
-          child: ElevatedButton.icon(
-            onPressed: _toggleStreaming,
-            icon: Icon(_isStreaming ? Icons.stop : Icons.play_arrow),
-            label: Text(
-              _isStreaming
-                  ? 'Stop LiDAR Stream'
-                  : 'Start LiDAR Stream (30 FPS)',
-            ),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              backgroundColor: _isStreaming
-                  ? Colors.red.shade900
-                  : Colors.blue.shade900,
             ),
           ),
         ),
