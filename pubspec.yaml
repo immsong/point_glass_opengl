@@ -38,9 +38,6 @@ flutter:
   # Please refer to README.md for a detailed explanation.
   plugin:
     platforms:
-      android:
-        package: com.example.point_glass_opengl
-        pluginClass: PointGlassOpenglPlugin
       linux:
         pluginClass: PointGlassOpenglPlugin
       windows:

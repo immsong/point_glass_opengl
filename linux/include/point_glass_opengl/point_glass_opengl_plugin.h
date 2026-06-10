@@ -12,15 +12,16 @@ G_BEGIN_DECLS
 #endif
 
 typedef struct _PointGlassOpenglPlugin PointGlassOpenglPlugin;
-typedef struct {
+typedef struct
+{
   GObjectClass parent_class;
 } PointGlassOpenglPluginClass;
 
 FLUTTER_PLUGIN_EXPORT GType point_glass_opengl_plugin_get_type();
 
 FLUTTER_PLUGIN_EXPORT void point_glass_opengl_plugin_register_with_registrar(
-    FlPluginRegistrar* registrar);
+    FlPluginRegistrar *registrar);
 
 G_END_DECLS
 
-#endif  // FLUTTER_PLUGIN_POINT_GLASS_OPENGL_PLUGIN_H_
+#endif // FLUTTER_PLUGIN_POINT_GLASS_OPENGL_PLUGIN_H_

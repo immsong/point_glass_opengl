@@ -1,7 +1,10 @@
 use std::ffi::c_void;
 use std::ptr;
 
-// 1. 위치, 색상, 크기를 모두 배열에서 받아오는 Vertex Shader
+// 위치, 색상, 크기를 하나의 배열에서 받아오는 Vertex Shader
+// aPos: 정점의 3D 좌표 (X, Y, Z)
+// aColor: 정점의 색상 및 투명도 (R, G, B, A)
+// aSize: 점의 크기 (gl_PointSize 로 전달됨)
 const VERTEX_SHADER_SOURCE: &str = "#version 300 es\n\
     layout (location = 0) in vec3 aPos;\n\
     layout (location = 1) in vec4 aColor;\n\
@@ -14,7 +17,7 @@ const VERTEX_SHADER_SOURCE: &str = "#version 300 es\n\
         vColor = aColor;\n\
     }";
 
-// 2. 전달받은 색상과 투명도(Alpha)를 칠하는 Fragment Shader
+// 전달받은 색상과 투명도를 화면에 칠하는 Fragment Shader
 const FRAGMENT_SHADER_SOURCE: &str = "#version 300 es\n\
     precision mediump float;\n\
     in vec4 vColor;\n\
@@ -23,11 +26,13 @@ const FRAGMENT_SHADER_SOURCE: &str = "#version 300 es\n\
         FragColor = vColor;\n\
     }";
 
+// 렌더링에 필요한 모든 상태를 저장하는 핵심 구조체
 pub struct Renderer {
     gl_loaded: bool,
     shader_program: u32,
 
-    // 점, 선, 면 각각의 VAO, VBO 보관
+    // 점, 선, 면 각각의 VAO(정점 배열 객체), VBO(정점 버퍼 객체)
+    // 3가지 데이터를 독립적으로 관리하여 렌더링 성능을 최적화합니다.
     vao_points: u32,
     vbo_points: u32,
     vao_lines: u32,
@@ -35,7 +40,8 @@ pub struct Renderer {
     vao_polys: u32,
     vbo_polys: u32,
 
-    // Dart에서 받은 데이터 대기열 (정점 1개당 8개의 f32 사용)
+    // Dart로부터 FFI를 통해 전달받은 데이터 대기열
+    // 렌더링 루프가 돌 때 이 데이터가 존재하면 GPU 버퍼로 업로드됩니다.
     pending_points: Option<Vec<f32>>,
     point_count: i32,
     pending_lines: Option<Vec<f32>>,
@@ -43,6 +49,7 @@ pub struct Renderer {
     pending_polys: Option<Vec<f32>>,
     poly_count: i32,
 
+    // 화면 해상도 및 카메라 상태
     width: u32,
     height: u32,
     yaw: f32,
@@ -83,6 +90,7 @@ impl Renderer {
         }
     }
 
+    // 셰이더 코드를 컴파일하는 내부 헬퍼 함수
     unsafe fn compile_shader(shader_type: u32, source: &str) -> u32 {
         let shader = unsafe { gl::CreateShader(shader_type) };
         let c_str = std::ffi::CString::new(source).unwrap();
@@ -91,7 +99,9 @@ impl Renderer {
         shader
     }
 
-    // [X, Y, Z, R, G, B, A, Size] 형태의 Interleaved Buffer 구조를 세팅하는 헬퍼
+    // Interleaved Buffer(교차 버퍼) 구조를 세팅하는 함수
+    // 데이터 포맷: [X, Y, Z, R, G, B, A, Size] (정점당 8개의 float, 총 32바이트)
+    // 객체를 따로 만들지 않고 1차원 배열로 압축하여 GPU 업로드 병목을 최소화합니다.
     unsafe fn setup_buffers(vao: &mut u32, vbo: &mut u32) {
         unsafe { gl::GenVertexArrays(1, vao) };
         unsafe { gl::GenBuffers(1, vbo) };
@@ -99,10 +109,12 @@ impl Renderer {
         unsafe { gl::BindBuffer(gl::ARRAY_BUFFER, *vbo) };
 
         let stride = (8 * std::mem::size_of::<f32>()) as i32;
-        // location = 0: aPos (vec3)
+
+        // Location 0: aPos (vec3) - 오프셋 0
         unsafe { gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null()) };
         unsafe { gl::EnableVertexAttribArray(0) };
-        // location = 1: aColor (vec4)
+
+        // Location 1: aColor (vec4) - 오프셋 3 (X, Y, Z 이후)
         unsafe {
             gl::VertexAttribPointer(
                 1,
@@ -114,7 +126,8 @@ impl Renderer {
             )
         };
         unsafe { gl::EnableVertexAttribArray(1) };
-        // location = 2: aSize (float)
+
+        // Location 2: aSize (float) - 오프셋 7 (X, Y, Z, R, G, B, A 이후)
         unsafe {
             gl::VertexAttribPointer(
                 2,
@@ -130,13 +143,14 @@ impl Renderer {
         unsafe { gl::BindVertexArray(0) };
     }
 
+    // Model, View, Projection 행렬을 계산하고 곱하는 함수
     fn calculate_mvp(&self) -> [f32; 16] {
-        // 1. 기존 카메라 뷰(View) 계산 (렌즈 회전인 roll 제거, 늘 똑바른 자세 유지)
+        // 1. View Matrix (카메라 위치 및 바라보는 방향)
+        // roll 연산을 배제하여 카메라 자체가 기울어지지 않도록 고정합니다.
         let eye_x = self.target_x + self.radius * self.pitch.cos() * self.yaw.sin();
         let eye_y = self.target_y + self.radius * self.pitch.sin();
         let eye_z = self.target_z + self.radius * self.pitch.cos() * self.yaw.cos();
 
-        // 기둥(Up) 벡터는 무조건 월드 Y축 기준으로 고정
         let up_x = -self.pitch.sin() * self.yaw.sin();
         let up_y = self.pitch.cos();
         let up_z = -self.pitch.sin() * self.yaw.cos();
@@ -146,28 +160,28 @@ impl Renderer {
             [self.target_x, self.target_y, self.target_z],
             [up_x, up_y, up_z],
         );
+
+        // 2. Projection Matrix (원근감 처리)
         let aspect = self.width as f32 / self.height.max(1) as f32;
         let proj = perspective(45.0f32.to_radians(), aspect, 0.1, 1_000_000.0);
 
         let vp = multiply_matrices(proj, view);
 
-        // 2. 월드 Z축 회전 행렬 (Model Matrix)
-        // Dart에서 받는 roll 값을 이제 "3D 공간 전체의 Z축 회전각"으로 사용합니다.
+        // 3. Model Matrix (월드 공간 회전)
+        // Dart에서 전달받은 roll 값을 사용하여 3D 세상(Z축 기준) 전체를 턴테이블처럼 회전시킵니다.
         let cos_z = self.roll.cos();
         let sin_z = self.roll.sin();
         let model = [
-            cos_z, sin_z, 0.0, 0.0, // Column 0
-            -sin_z, cos_z, 0.0, 0.0, // Column 1
-            0.0, 0.0, 1.0, 0.0, // Column 2
-            0.0, 0.0, 0.0, 1.0, // Column 3
+            cos_z, sin_z, 0.0, 0.0, -sin_z, cos_z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
 
-        // 3. 최종 행렬 완성: MVP = Proj * View * Model
+        // 최종 행렬은 Proj * View * Model 순서로 결합됩니다.
         multiply_matrices(vp, model)
     }
 
     pub fn render(&mut self) {
         unsafe {
+            // 최초 1회 OpenGL 함수 포인터 로드 및 셰이더, 버퍼 초기화
             if !self.gl_loaded {
                 let libgl = libc::dlopen(b"libGL.so.1\0".as_ptr() as *const _, libc::RTLD_LAZY);
                 let libegl = libc::dlopen(b"libEGL.so.1\0".as_ptr() as *const _, libc::RTLD_LAZY);
@@ -196,18 +210,18 @@ impl Renderer {
                 Self::setup_buffers(&mut self.vao_polys, &mut self.vbo_polys);
 
                 gl::Enable(gl::PROGRAM_POINT_SIZE);
-                gl::Enable(gl::DEPTH_TEST); // 깊이 테스트 켜기 (진짜 3D 공간을 위해)
-                gl::Enable(gl::BLEND); // 알파(투명도) 블렌딩 켜기
+                gl::Enable(gl::DEPTH_TEST);
+                gl::Enable(gl::BLEND);
                 gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
                 self.gl_loaded = true;
             }
 
-            // GPU 데이터 업로드 로직 (수신된 데이터가 있을 때만 갱신)
+            // 수신된 대기열(pending) 데이터가 있으면 GPU 메모리(VBO)로 업로드합니다.
             let upload_data =
                 |pending: &mut Option<Vec<f32>>, vao: u32, vbo: u32, count: &mut i32| {
                     if let Some(data) = pending.take() {
-                        *count = (data.len() / 8) as i32; // 정점당 8 float
+                        *count = (data.len() / 8) as i32;
                         gl::BindVertexArray(vao);
                         gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
                         gl::BufferData(
@@ -218,6 +232,7 @@ impl Renderer {
                         );
                     }
                 };
+
             upload_data(
                 &mut self.pending_points,
                 self.vao_points,
@@ -237,30 +252,46 @@ impl Renderer {
                 &mut self.poly_count,
             );
 
+            // 화면을 지우기 전에 모든 쓰기 마스크를 해제합니다.
+            // 이전 프레임에서 폴리곤을 그리며 꺼두었던 DepthMask로 인해 화면이 지워지지 않는 버그를 방지합니다.
+            gl::DepthMask(gl::TRUE);
+            gl::ColorMask(gl::TRUE, gl::TRUE, gl::TRUE, gl::TRUE);
+
             gl::ClearColor(0.1, 0.1, 0.1, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); // Depth 버퍼도 함께 Clear
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
             if self.point_count > 0 || self.line_count > 0 || self.poly_count > 0 {
                 gl::UseProgram(self.shader_program);
+
+                // 블렌딩 모드 설정
+                // 색상은 자연스럽게 섞되, 도화지(FBO)의 알파값은 1.0으로 유지하여
+                // Flutter 배경(검은색)이 투과되어 화면이 짙어지는 현상을 방지합니다.
+                gl::Enable(gl::BLEND);
+                gl::BlendFuncSeparate(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::ZERO, gl::ONE);
+
                 let mvp = self.calculate_mvp();
                 let mvp_loc =
                     gl::GetUniformLocation(self.shader_program, b"uMVP\0".as_ptr() as *const i8);
                 gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
 
-                // 1. 면(Polygons) 먼저 그리기
-                if self.poly_count > 0 {
-                    gl::BindVertexArray(self.vao_polys);
-                    gl::DrawArrays(gl::TRIANGLES, 0, self.poly_count);
-                }
-                // 2. 선(Lines) 그리기
+                // 불투명한 객체(선, 점)를 먼저 그립니다.
                 if self.line_count > 0 {
                     gl::BindVertexArray(self.vao_lines);
                     gl::DrawArrays(gl::LINES, 0, self.line_count);
                 }
-                // 3. 점(Points) 그리기
+
                 if self.point_count > 0 {
                     gl::BindVertexArray(self.vao_points);
                     gl::DrawArrays(gl::POINTS, 0, self.point_count);
+                }
+
+                // 반투명한 객체(면)는 가장 마지막에 그립니다.
+                // 이때 반투명한 면끼리 Z-버퍼 충돌(Z-fighting)이 일어나 서로 가려지는 것을 막기 위해 DepthMask를 임시로 끕니다.
+                if self.poly_count > 0 {
+                    gl::DepthMask(gl::FALSE);
+                    gl::BindVertexArray(self.vao_polys);
+                    gl::DrawArrays(gl::TRIANGLES, 0, self.poly_count);
+                    gl::DepthMask(gl::TRUE);
                 }
 
                 gl::BindVertexArray(0);
@@ -270,7 +301,7 @@ impl Renderer {
     }
 }
 
-// --- 4x4 행렬 연산 ---
+// 4x4 행렬 연산 유틸리티 (Column-major 기반)
 fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let f = {
         let r = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
@@ -346,7 +377,9 @@ fn multiply_matrices(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     res
 }
 
-// --- FFI 인터페이스 ---
+// FFI 인터페이스 노출 (C ABI)
+// Dart 측에서 호출할 수 있도록 맹글링을 방지하고 메모리 포인터를 교환합니다.
+
 #[unsafe(no_mangle)]
 pub extern "C" fn create_renderer() -> *mut c_void {
     Box::into_raw(Box::new(Renderer::new())) as *mut c_void
@@ -359,7 +392,6 @@ pub extern "C" fn render_frame(renderer_ptr: *mut c_void) {
     }
 }
 
-// 새로운 3개의 데이터 입력 인터페이스 (점, 선, 면)
 #[unsafe(no_mangle)]
 pub extern "C" fn set_points(renderer_ptr: *mut c_void, data_ptr: *const f32, length: usize) {
     if !renderer_ptr.is_null() && !data_ptr.is_null() {
@@ -419,6 +451,8 @@ pub extern "C" fn pan_camera(renderer_ptr: *mut c_void, dx: f32, dy: f32) {
         let up_x = -r.pitch.sin() * r.yaw.sin();
         let up_y = r.pitch.cos();
         let up_z = -r.pitch.sin() * r.yaw.cos();
+
+        // 화면 이동 비율 조절 (radius에 비례하여 자연스러운 패닝 구현)
         let scale = r.radius * 0.001;
         r.target_x += (right_x * dx - up_x * dy) * scale;
         r.target_y += (-up_y * dy) * scale;
