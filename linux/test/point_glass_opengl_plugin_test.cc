@@ -13,19 +13,22 @@
 // built for x64 debug, run:
 // $ build/linux/x64/debug/plugins/my_plugin/my_plugin_test
 
-namespace point_glass_opengl {
-namespace test {
+namespace point_glass_opengl
+{
+  namespace test
+  {
 
-TEST(PointGlassOpenglPlugin, GetPlatformVersion) {
-  g_autoptr(FlMethodResponse) response = get_platform_version();
-  ASSERT_NE(response, nullptr);
-  ASSERT_TRUE(FL_IS_METHOD_SUCCESS_RESPONSE(response));
-  FlValue* result = fl_method_success_response_get_result(
-      FL_METHOD_SUCCESS_RESPONSE(response));
-  ASSERT_EQ(fl_value_get_type(result), FL_VALUE_TYPE_STRING);
-  // The full string varies, so just validate that it has the right format.
-  EXPECT_THAT(fl_value_get_string(result), testing::StartsWith("Linux "));
-}
+    TEST(PointGlassOpenglPlugin, GetPlatformVersion)
+    {
+      g_autoptr(FlMethodResponse) response = get_platform_version();
+      ASSERT_NE(response, nullptr);
+      ASSERT_TRUE(FL_IS_METHOD_SUCCESS_RESPONSE(response));
+      FlValue *result = fl_method_success_response_get_result(
+          FL_METHOD_SUCCESS_RESPONSE(response));
+      ASSERT_EQ(fl_value_get_type(result), FL_VALUE_TYPE_STRING);
+      // The full string varies, so just validate that it has the right format.
+      EXPECT_THAT(fl_value_get_string(result), testing::StartsWith("Linux "));
+    }
 
-}  // namespace test
-}  // namespace point_glass_opengl
+  } // namespace test
+} // namespace point_glass_opengl
