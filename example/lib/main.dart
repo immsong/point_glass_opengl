@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:point_glass_opengl/point_glass_opengl.dart';
@@ -31,9 +34,12 @@ class PointGlassExample extends StatefulWidget {
 }
 
 class _PointGlassExampleState extends State<PointGlassExample> {
-  final List<PointGlassOpenGLPoints> pointsGroup = [];
+  final PointGlassOpenGLController _glController = PointGlassOpenGLController();
+  Timer? _sceneTimer;
 
   void _loadScene() {
+    List<PointGlassOpenGLPoints> pointsGroup = [];
+
     final rand = Random();
     for (int i = 0; i < 500; i++) {
       double x = (rand.nextDouble() * 10) - 5.0;
@@ -54,16 +60,28 @@ class _PointGlassExampleState extends State<PointGlassExample> {
         ),
       );
     }
+
+    final floatData = DataConverter.convertPointsGroup(pointsGroup);
+    _glController.setPoints(floatData);
   }
 
   @override
   void initState() {
     super.initState();
-    _loadScene();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadScene();
+
+      _sceneTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
+        if (!mounted) return;
+        _loadScene();
+      });
+    });
   }
 
   @override
   void dispose() {
+    _sceneTimer?.cancel();
     super.dispose();
   }
 
@@ -74,7 +92,7 @@ class _PointGlassExampleState extends State<PointGlassExample> {
         Expanded(
           child: Padding(
             padding: const EdgeInsets.all(16.0),
-            child: PointGlassOpenGLViewer(pointsGroup: pointsGroup),
+            child: PointGlassOpenGLViewer(controller: _glController),
           ),
         ),
       ],

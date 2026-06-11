@@ -9,22 +9,25 @@ import 'package:point_glass_opengl/src/models/point_glass_opengl_points.dart';
 
 /// 마우스/키보드 카메라 제어가 내장된 OpenGL 뷰어
 class PointGlassOpenGLViewer extends StatefulWidget {
+  final PointGlassOpenGLController? controller;
   final List<PointGlassOpenGLPoints>? pointsGroup;
 
-  const PointGlassOpenGLViewer({super.key, this.pointsGroup});
+  const PointGlassOpenGLViewer({super.key, this.controller, this.pointsGroup});
 
   @override
   State<PointGlassOpenGLViewer> createState() => _PointGlassOpenGLViewerState();
 }
 
 class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
-  final PointGlassOpenGLController _controller = PointGlassOpenGLController();
+  late final PointGlassOpenGLController _controller;
   bool _isShiftPressed = false;
   bool _isCtrlPressed = false;
 
   @override
   void initState() {
     super.initState();
+    _controller = widget.controller ?? PointGlassOpenGLController();
+
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
   }
 
