@@ -4,8 +4,10 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/material.dart';
 
 import 'package:ffi/ffi.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 // ============================================================================
 // [FFI (Foreign Function Interface) 타입 정의]
@@ -49,12 +51,27 @@ typedef PanCameraC = Void Function(Pointer<Void> renderer, Float dx, Float dy);
 typedef PanCameraDart =
     void Function(Pointer<Void> renderer, double dx, double dy);
 
+typedef Project3DToScreenBatchC =
+    Void Function(
+      Pointer<Void> renderer,
+      Pointer<Float> inCoords,
+      IntPtr count,
+      Pointer<Float> outCoords,
+    );
+typedef Project3DToScreenBatchDart =
+    void Function(
+      Pointer<Void> renderer,
+      Pointer<Float> inCoords,
+      int count,
+      Pointer<Float> outCoords,
+    );
+
 // ============================================================================
 // [PointGlassController]
 // 사용자가 3D 뷰어를 제어하기 위해 사용하는 핵심 컨트롤러 클래스입니다.
 // Rust 렌더러 메모리 주소를 보관하고, 데이터 전송 및 카메라 조작 명령을 내립니다.
 // ============================================================================
-class PointGlassOpenGLController {
+class PointGlassOpenGLController with ChangeNotifier {
   // Flutter 네이티브(C++) 쪽과 통신하여 텍스처(화면)를 생성/갱신하기 위한 채널
   static const MethodChannel _channel = MethodChannel('point_glass_opengl');
 
@@ -72,6 +89,8 @@ class PointGlassOpenGLController {
   late UpdateCameraDart _updateCamera;
   late ResizeRendererDart _resizeRenderer;
   late PanCameraDart _panCamera;
+
+  late Project3DToScreenBatchDart _project3DToScreenBatch;
 
   // --- 카메라 상태 변수 ---
   double yaw = pi; // 좌우 회전각 (Orbit)
@@ -110,6 +129,11 @@ class PointGlassOpenGLController {
     _panCamera = _dylib
         .lookup<NativeFunction<PanCameraC>>('pan_camera')
         .asFunction();
+    _project3DToScreenBatch = _dylib
+        .lookup<NativeFunction<Project3DToScreenBatchC>>(
+          'project_3d_to_screen_batch',
+        )
+        .asFunction();
 
     // C++ 쪽으로 넘겨주기 위해 함수 포인터(주소) 자체를 추출
     final renderFuncPointer = _dylib.lookup<NativeFunction<RenderFrameC>>(
@@ -128,6 +152,45 @@ class PointGlassOpenGLController {
       'width': width,
       'height': height,
     });
+  }
+
+  /// 3D 좌표를 화면 좌표로 변환하여 반환합니다.
+  List<Offset?> project3DToScreenBatch(List<vm.Vector3> points) {
+    if (_rendererPtr == null || points.isEmpty) return [];
+
+    final count = points.length;
+    // C++ 힙 영역에 입력(3D)과 출력(2D) 메모리 할당
+    final inPtr = calloc<Float>(count * 3);
+    final outPtr = calloc<Float>(count * 2);
+
+    // Dart Vector3 데이터를 C++ 메모리로 복사
+    for (int i = 0; i < count; i++) {
+      inPtr[i * 3] = points[i].x;
+      inPtr[i * 3 + 1] = points[i].y;
+      inPtr[i * 3 + 2] = points[i].z;
+    }
+
+    // Rust 마법(일괄 계산) 실행!
+    _project3DToScreenBatch(_rendererPtr!, inPtr, count, outPtr);
+
+    // 결과를 Dart의 Offset 리스트로 변환
+    List<Offset?> results = [];
+    for (int i = 0; i < count; i++) {
+      final sx = outPtr[i * 2];
+      final sy = outPtr[i * 2 + 1];
+
+      if (sx < -9000.0) {
+        results.add(null); // 화면 밖
+      } else {
+        results.add(Offset(sx, sy)); // NDC 비율
+      }
+    }
+
+    // 메모리 누수 방지
+    calloc.free(inPtr);
+    calloc.free(outPtr);
+
+    return results;
   }
 
   /// 창 크기 변경 시 호출되어 텍스처와 FBO 해상도를 업데이트합니다.
@@ -150,6 +213,8 @@ class PointGlassOpenGLController {
     if (textureId != null) {
       _channel.invokeMethod('requestRender');
     }
+
+    notifyListeners(); // 라벨 등 Flutter 위젯이 업데이트되어야 할 때 사용
   }
 
   /// 내부 통신 헬퍼: Dart 배열(Float32List)을 C/Rust 메모리로 복사하여 전송합니다.
