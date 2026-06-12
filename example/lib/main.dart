@@ -92,7 +92,10 @@ class _PointGlassExampleState extends State<PointGlassExample> {
         Expanded(
           child: Padding(
             padding: const EdgeInsets.all(16.0),
-            child: PointGlassOpenGLViewer(controller: _glController),
+            child: PointGlassOpenGLViewer(
+              controller: _glController,
+              grid: PointGlassOpenGLGrid(),
+            ),
           ),
         ),
       ],

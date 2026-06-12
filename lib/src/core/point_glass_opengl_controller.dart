@@ -64,7 +64,7 @@ class PointGlassOpenGLController {
   late DynamicLibrary _dylib;
   late CreateRendererDart _createRenderer;
 
-  // 💡 3가지 렌더링 데이터 바인딩 함수 (점, 선, 면)
+  // 3가지 렌더링 데이터 바인딩 함수 (점, 선, 면)
   late SetDataDart _setPoints;
   late SetDataDart _setLines;
   late SetDataDart _setPolygons;

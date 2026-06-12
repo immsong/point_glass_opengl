@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
@@ -6,13 +8,20 @@ import 'package:point_glass_opengl/src/core/point_glass_opengl_controller.dart';
 import 'package:point_glass_opengl/src/core/point_glass_opengl_raw_view.dart';
 import 'package:point_glass_opengl/src/core/data_converter.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_points.dart';
+import 'package:point_glass_opengl/src/models/point_glass_opengl_grid.dart';
 
 /// 마우스/키보드 카메라 제어가 내장된 OpenGL 뷰어
 class PointGlassOpenGLViewer extends StatefulWidget {
   final PointGlassOpenGLController? controller;
   final List<PointGlassOpenGLPoints>? pointsGroup;
+  final PointGlassOpenGLGrid? grid;
 
-  const PointGlassOpenGLViewer({super.key, this.controller, this.pointsGroup});
+  const PointGlassOpenGLViewer({
+    super.key,
+    this.pointsGroup,
+    this.grid,
+    this.controller,
+  });
 
   @override
   State<PointGlassOpenGLViewer> createState() => _PointGlassOpenGLViewerState();
@@ -67,12 +76,22 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
       final floatData = DataConverter.convertPointsGroup(widget.pointsGroup!);
       _controller.setPoints(floatData);
     }
+
+    if (widget.grid != null) {
+      final gridData = DataConverter.convertGrid(widget.grid!);
+      _controller.setLines(gridData);
+    } else {
+      _controller.setLines(Float32List(0));
+    }
   }
 
   @override
   void didUpdateWidget(covariant PointGlassOpenGLViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _updateData();
+    if (widget.pointsGroup != oldWidget.pointsGroup ||
+        widget.grid != oldWidget.grid) {
+      _updateData();
+    }
   }
 
   @override
