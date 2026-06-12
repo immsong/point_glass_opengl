@@ -459,3 +459,45 @@ pub extern "C" fn pan_camera(renderer_ptr: *mut c_void, dx: f32, dy: f32) {
         r.target_z += (right_z * dx - up_z * dy) * scale;
     }
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn project_3d_to_screen_batch(
+    renderer_ptr: *mut c_void,
+    in_coords: *const f32, // [x1, y1, z1, x2, y2, z2, ...] (Dart에서 넘겨주는 3D 좌표들)
+    count: usize,          // 점의 개수
+    out_coords: *mut f32,  // [ndc_x1, ndc_y1, ndc_x2, ndc_y2, ...] (Rust가 적어줄 2D 비율)
+) {
+    if renderer_ptr.is_null() || in_coords.is_null() || out_coords.is_null() || count == 0 {
+        return;
+    }
+
+    let r = unsafe { &*(renderer_ptr as *mut Renderer) };
+    let mvp = r.calculate_mvp(); // 카메라 매트릭스는 한 번만 계산!
+
+    for i in 0..count {
+        let in_idx = i * 3;
+        let out_idx = i * 2;
+
+        let obj_x = unsafe { *in_coords.add(in_idx) };
+        let obj_y = unsafe { *in_coords.add(in_idx + 1) };
+        let obj_z = unsafe { *in_coords.add(in_idx + 2) };
+
+        let clip_x = obj_x * mvp[0] + obj_y * mvp[4] + obj_z * mvp[8] + mvp[12];
+        let clip_y = obj_x * mvp[1] + obj_y * mvp[5] + obj_z * mvp[9] + mvp[13];
+        let clip_w = obj_x * mvp[3] + obj_y * mvp[7] + obj_z * mvp[11] + mvp[15];
+
+        // 카메라 등 뒤로 넘어간 점 방어 로직
+        if clip_w < 0.1 {
+            unsafe {
+                *out_coords.add(out_idx) = -10000.0;
+                *out_coords.add(out_idx + 1) = -10000.0;
+            }
+        } else {
+            // 순수 화면 비율(NDC) 저장
+            unsafe {
+                *out_coords.add(out_idx) = clip_x / clip_w;
+                *out_coords.add(out_idx + 1) = clip_y / clip_w;
+            }
+        }
+    }
+}

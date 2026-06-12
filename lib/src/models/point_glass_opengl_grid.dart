@@ -7,10 +7,7 @@ class PointGlassOpenGLGrid {
   final double gridStep; // 격자 한 칸의 간격 (예: 1)
   final Color color;
   final double lineWidth;
-
   final bool enableLabel;
-  final Color labelColor;
-  final double labelFontSize;
 
   PointGlassOpenGLGrid({
     this.enable = true,
@@ -19,7 +16,5 @@ class PointGlassOpenGLGrid {
     this.color = const Color(0xC8248EFF), // 기본값: 반투명한 파란색
     this.lineWidth = 1.0,
     this.enableLabel = true,
-    this.labelColor = Colors.white70,
-    this.labelFontSize = 12,
   });
 }
