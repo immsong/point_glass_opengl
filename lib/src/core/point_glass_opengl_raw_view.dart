@@ -31,8 +31,9 @@ class _PointGlassOpenGLRawViewState extends State<PointGlassOpenGLRawView> {
         final w = (constraints.maxWidth * ratio).round();
         final h = (constraints.maxHeight * ratio).round();
 
-        if (w <= 0 || h <= 0)
+        if (w <= 0 || h <= 0) {
           return const Center(child: CircularProgressIndicator());
+        }
 
         if (!_initStarted) {
           _initStarted = true;

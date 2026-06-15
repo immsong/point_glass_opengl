@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:point_glass_opengl/point_glass_opengl.dart';
@@ -95,6 +93,7 @@ class _PointGlassExampleState extends State<PointGlassExample> {
             child: PointGlassOpenGLViewer(
               controller: _glController,
               grid: PointGlassOpenGLGrid(),
+              axis: PointGlassOpenGLAxis(),
             ),
           ),
         ),

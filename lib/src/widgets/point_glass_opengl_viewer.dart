@@ -12,6 +12,7 @@ import 'package:point_glass_opengl/src/core/data_converter.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_points.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_grid.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_label.dart';
+import 'package:point_glass_opengl/src/models/point_glass_opengl_axis.dart';
 
 /// 마우스/키보드 카메라 제어가 내장된 OpenGL 뷰어
 class PointGlassOpenGLViewer extends StatefulWidget {
@@ -20,12 +21,14 @@ class PointGlassOpenGLViewer extends StatefulWidget {
   final List<PointGlassOpenGLPoints>? pointsGroup;
   final PointGlassOpenGLGrid? grid;
   final List<PointGlassOpenGLLabel>? labels;
+  final PointGlassOpenGLAxis? axis;
 
   const PointGlassOpenGLViewer({
     super.key,
     this.pointsGroup,
     this.grid,
     this.labels,
+    this.axis,
     this.controller,
   });
 
@@ -86,12 +89,22 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
       _controller.setPoints(floatData);
     }
 
+    List<Float32List> lineData = [];
     if (widget.grid != null) {
       final gridData = DataConverter.convertGrid(widget.grid!);
-      _controller.setLines(gridData);
-    } else {
-      _controller.setLines(Float32List(0));
+      lineData.add(gridData);
     }
+
+    if (widget.axis != null && widget.axis!.enable) {
+      final axisData = DataConverter.convertAxis(widget.axis!);
+      lineData.add(axisData);
+    }
+
+    Float32List combinedLineData = Float32List(
+      lineData.fold(0, (sum, data) => sum + data.length),
+    );
+    combinedLineData.setAll(0, lineData.expand((data) => data));
+    _controller.setLines(combinedLineData);
   }
 
   void _updateLabels() {
@@ -118,6 +131,51 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
       }
     }
 
+    // Axis 라벨 조립
+    if (widget.axis != null && widget.axis!.enableLabel) {
+      // X축 라벨
+      newLabels.add(
+        PointGlassOpenGLLabel(
+          position: vm.Vector3(widget.axis!.length / 2.0, 0.0, 0.0),
+          text: 'X',
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+        ),
+      );
+
+      // Y축 라벨
+      newLabels.add(
+        PointGlassOpenGLLabel(
+          position: vm.Vector3(0.0, widget.axis!.length / 2.0, 0.0),
+          text: 'Y',
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+        ),
+      );
+
+      // Z축 라벨
+      newLabels.add(
+        PointGlassOpenGLLabel(
+          position: vm.Vector3(0.0, 0.0, widget.axis!.length / 2.0),
+          text: 'Z',
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+        ),
+      );
+    }
+
     // 유저 커스텀 라벨 조립
     if (widget.labels != null) {
       newLabels.addAll(widget.labels!);
@@ -131,11 +189,14 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
   void didUpdateWidget(covariant PointGlassOpenGLViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.pointsGroup != oldWidget.pointsGroup ||
-        widget.grid != oldWidget.grid) {
+        widget.grid != oldWidget.grid ||
+        widget.axis != oldWidget.axis) {
       _updateData();
     }
 
-    if (widget.grid != oldWidget.grid || widget.labels != oldWidget.labels) {
+    if (widget.grid != oldWidget.grid ||
+        widget.labels != oldWidget.labels ||
+        widget.axis != oldWidget.axis) {
       _updateLabels();
     }
   }
