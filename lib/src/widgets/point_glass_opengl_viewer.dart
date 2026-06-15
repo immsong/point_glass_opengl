@@ -89,22 +89,19 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
       _controller.setPoints(floatData);
     }
 
-    List<Float32List> lineData = [];
     if (widget.grid != null) {
       final gridData = DataConverter.convertGrid(widget.grid!);
-      lineData.add(gridData);
+      _controller.setLines(gridData);
+    } else {
+      _controller.setLines(Float32List(0));
     }
 
-    if (widget.axis != null && widget.axis!.enable) {
-      final axisData = DataConverter.convertAxis(widget.axis!);
-      lineData.add(axisData);
+    if (widget.axis != null) {
+      final axisData = DataConverter.convertAxisToPolygons(widget.axis!);
+      _controller.setPolygons(axisData);
+    } else {
+      _controller.setPolygons(Float32List(0));
     }
-
-    Float32List combinedLineData = Float32List(
-      lineData.fold(0, (sum, data) => sum + data.length),
-    );
-    combinedLineData.setAll(0, lineData.expand((data) => data));
-    _controller.setLines(combinedLineData);
   }
 
   void _updateLabels() {
@@ -132,48 +129,13 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
     }
 
     // Axis 라벨 조립
-    if (widget.axis != null && widget.axis!.enableLabel) {
+    if (widget.axis != null && widget.axis!.labelEnable) {
       // X축 라벨
-      newLabels.add(
-        PointGlassOpenGLLabel(
-          position: vm.Vector3(widget.axis!.length / 2.0, 0.0, 0.0),
-          text: 'X',
-          style: TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
-          ),
-        ),
-      );
-
+      newLabels.add(widget.axis!.labelX);
       // Y축 라벨
-      newLabels.add(
-        PointGlassOpenGLLabel(
-          position: vm.Vector3(0.0, widget.axis!.length / 2.0, 0.0),
-          text: 'Y',
-          style: TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
-          ),
-        ),
-      );
-
+      newLabels.add(widget.axis!.labelY);
       // Z축 라벨
-      newLabels.add(
-        PointGlassOpenGLLabel(
-          position: vm.Vector3(0.0, 0.0, widget.axis!.length / 2.0),
-          text: 'Z',
-          style: TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
-          ),
-        ),
-      );
+      newLabels.add(widget.axis!.labelZ);
     }
 
     // 유저 커스텀 라벨 조립

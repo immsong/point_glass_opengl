@@ -1,32 +1,70 @@
 import 'package:flutter/material.dart';
 
+import 'package:vector_math/vector_math.dart' as vm;
+
+import 'point_glass_opengl_label.dart';
+
 /// 3D 공간의 원점(0,0,0)에 X, Y, Z 축을 표시하기 위한 설정 모델
 class PointGlassOpenGLAxis {
   final bool enable;
+  final double length;
+  final double lineWidth;
 
-  // 축의 시각적 크기
-  final double length; // 축 선의 길이 (예: 기본값 1.0m)
-  final double lineWidth; // 축 선의 두께
+  final Color colorX;
+  final Color colorY;
+  final Color colorZ;
 
-  // X, Y, Z 축의 색상 (3D 그래픽스 표준 관례: RGB)
-  final Color colorX; // Red
-  final Color colorY; // Green
-  final Color colorZ; // Blue
-
-  // 💡 방금 만든 강력한 라벨 시스템 활용!
-  final bool enableLabel; // 축 끝에 "X", "Y", "Z" 글씨 표시 여부
-  final double labelFontSize; // 라벨 글씨 크기
+  final bool labelEnable;
+  final PointGlassOpenGLLabel labelX;
+  final PointGlassOpenGLLabel labelY;
+  final PointGlassOpenGLLabel labelZ;
 
   PointGlassOpenGLAxis({
     this.enable = true,
     this.length = 1.0,
-    this.lineWidth = 1.0, // Grid(1.0)보다 살짝 두껍게 해서 눈에 띄게 함
-    // 기본값은 3D 업계 표준 색상 (X:빨강, Y:초록, Z:파랑)
+    this.lineWidth = 2.0,
     this.colorX = const Color.fromARGB(255, 255, 50, 50),
     this.colorY = const Color.fromARGB(255, 50, 255, 50),
-    this.colorZ = const Color.fromARGB(255, 50, 100, 255), // Z축은 파랑
-
-    this.enableLabel = true,
-    this.labelFontSize = 14.0,
-  });
+    this.colorZ = const Color.fromARGB(255, 50, 100, 255),
+    this.labelEnable = true,
+    PointGlassOpenGLLabel? labelX,
+    PointGlassOpenGLLabel? labelY,
+    PointGlassOpenGLLabel? labelZ,
+  }) : labelX =
+           labelX ??
+           PointGlassOpenGLLabel(
+             position: vm.Vector3(length / 2.0, lineWidth * 0.02, 0.0),
+             text: 'X',
+             style: TextStyle(
+               color: Colors.white70,
+               fontSize: 12,
+               fontWeight: FontWeight.bold,
+             ),
+           ),
+       labelY =
+           labelY ??
+           PointGlassOpenGLLabel(
+             position: vm.Vector3(lineWidth * 0.02, length / 2.0, 0.0),
+             text: 'Y',
+             style: TextStyle(
+               color: Colors.white70,
+               fontSize: 12,
+               fontWeight: FontWeight.bold,
+             ),
+           ),
+       labelZ =
+           labelZ ??
+           PointGlassOpenGLLabel(
+             position: vm.Vector3(
+               lineWidth * 0.02,
+               lineWidth * 0.02,
+               length / 2.0,
+             ),
+             text: 'Z',
+             style: TextStyle(
+               color: Colors.white70,
+               fontSize: 12,
+               fontWeight: FontWeight.bold,
+             ),
+           );
 }

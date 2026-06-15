@@ -1,6 +1,9 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+
+import 'package:vector_math/vector_math_64.dart' as vm;
+
 import 'package:point_glass_opengl/src/models/point_glass_opengl_points.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_grid.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_axis.dart';
@@ -67,33 +70,84 @@ class DataConverter {
     return Float32List.fromList(result);
   }
 
-  /// Axis 설정값을 OpenGL Lines용 데이터로 변환
-  /// 포맷: [X, Y, Z, R, G, B, A, Thickness]
-  static Float32List convertAxis(PointGlassOpenGLAxis axis) {
+  /// 축(Axis) 설정값을 면(Polygons/Triangles) 데이터로 변환하여 두께를 구현
+  /// 포맷: [X, Y, Z, R, G, B, A, 1.0] (8 floats per vertex)
+  static Float32List convertAxisToPolygons(PointGlassOpenGLAxis axis) {
     if (!axis.enable) return Float32List(0);
-    final List<double> result = [];
-    final double w = axis.lineWidth;
 
-    // 색상을 0.0 ~ 1.0 사이의 Float으로 변환하는 헬퍼 함수
-    void addLine(
-      double x1,
-      double y1,
-      double z1,
-      double x2,
-      double y2,
-      double z2,
+    final List<double> result = [];
+
+    // 두께 설정 (예: lineWidth가 2.0이면 0.02m 두께의 상자로 만듦)
+    // 3D 공간의 스케일에 맞게 적절히 조절 (필요시 곱하는 비율 조정 가능)
+    final double w = axis.lineWidth * 0.01;
+
+    // 사각형(Quad) 면 하나를 2개의 삼각형(Triangle)으로 쪼개서 넣는 헬퍼 함수
+    void addQuad(
+      vm.Vector3 p1,
+      vm.Vector3 p2,
+      vm.Vector3 p3,
+      vm.Vector3 p4,
       Color c,
     ) {
-      result.addAll([x1, y1, z1, c.r, c.g, c.b, c.a, w]);
-      result.addAll([x2, y2, z2, c.r, c.g, c.b, c.a, w]);
+      void addVertex(vm.Vector3 p) {
+        result.addAll([
+          p.x,
+          p.y,
+          p.z,
+          c.r,
+          c.g,
+          c.b,
+          c.a,
+          1.0,
+        ]); // 8자리 포맷 (마지막은 padding/w)
+      }
+
+      // 첫 번째 삼각형 (p1, p2, p3)
+      addVertex(p1);
+      addVertex(p2);
+      addVertex(p3);
+      // 두 번째 삼각형 (p1, p3, p4)
+      addVertex(p1);
+      addVertex(p3);
+      addVertex(p4);
     }
 
-    // X축 (Red)
-    addLine(0, 0, 0, axis.length, 0, 0, axis.colorX);
-    // Y축 (Green)
-    addLine(0, 0, 0, 0, axis.length, 0, axis.colorY);
-    // Z축 (Blue)
-    addLine(0, 0, 0, 0, 0, axis.length, axis.colorZ);
+    // 직육면체(Cuboid)를 생성하는 헬퍼 함수 (6개의 면 = 12개의 삼각형)
+    void addCuboid(
+      double xMin,
+      double xMax,
+      double yMin,
+      double yMax,
+      double zMin,
+      double zMax,
+      Color c,
+    ) {
+      final v000 = vm.Vector3(xMin, yMin, zMin);
+      final v100 = vm.Vector3(xMax, yMin, zMin);
+      final v110 = vm.Vector3(xMax, yMax, zMin);
+      final v010 = vm.Vector3(xMin, yMax, zMin);
+      final v001 = vm.Vector3(xMin, yMin, zMax);
+      final v101 = vm.Vector3(xMax, yMin, zMax);
+      final v111 = vm.Vector3(xMax, yMax, zMax);
+      final v011 = vm.Vector3(xMin, yMax, zMax);
+
+      // 앞, 뒤, 좌, 우, 위, 아래 6개의 면(Quad) 생성
+      addQuad(v001, v101, v111, v011, c); // Front
+      addQuad(v100, v000, v010, v110, c); // Back
+      addQuad(v000, v001, v011, v010, c); // Left
+      addQuad(v101, v100, v110, v111, c); // Right
+      addQuad(v011, v111, v110, v010, c); // Top
+      addQuad(v000, v100, v101, v001, c); // Bottom
+    }
+
+    // 1. X축 (Red): 길이는 X로 길게, Y와 Z는 두께(w)만큼
+    addCuboid(0.0, axis.length, -w, w, -w, w, axis.colorX);
+
+    // 2. Y축 (Green): 길이는 Y로 길게, X와 Z는 두께(w)만큼
+    addCuboid(-w, w, 0.0, axis.length, -w, w, axis.colorY);
+
+    // 3. Z축 (Blue): 길이는 Z로 길게, X와 Y는 두께(w)만큼
+    addCuboid(-w, w, -w, w, 0.0, axis.length, axis.colorZ);
 
     return Float32List.fromList(result);
   }
