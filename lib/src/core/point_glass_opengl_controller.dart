@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:ffi/ffi.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'package:point_glass_opengl/src/models/point_glass_opengl_points_color_mode.dart';
+
 // ============================================================================
 // [FFI (Foreign Function Interface) 타입 정의]
 // Dart와 Rust(C ABI) 간의 통신을 위해 C 언어 타입과 Dart 타입을 매칭합니다.
@@ -66,6 +68,25 @@ typedef Project3DToScreenBatchDart =
       Pointer<Float> outCoords,
     );
 
+typedef SetPointCloudDisplayParamsC =
+    Void Function(
+      Pointer<Void> renderer,
+      Float alpha,
+      Float size,
+      Float min,
+      Float max,
+      Int32 mode,
+    );
+typedef SetPointCloudDisplayParamsDart =
+    void Function(
+      Pointer<Void> renderer,
+      double alpha,
+      double size,
+      double min,
+      double max,
+      int mode,
+    );
+
 // ============================================================================
 // [PointGlassController]
 // 사용자가 3D 뷰어를 제어하기 위해 사용하는 핵심 컨트롤러 클래스입니다.
@@ -92,20 +113,38 @@ class PointGlassOpenGLController with ChangeNotifier {
 
   late Project3DToScreenBatchDart _project3DToScreenBatch;
 
+  late SetPointCloudDisplayParamsDart _setPointCloudDisplayParams;
+
   // --- 카메라 상태 변수 ---
   double yaw = pi; // 좌우 회전각 (Orbit)
   double pitch = pi; // 상하 회전각 (Orbit)
   double roll = 0.0; // Z축 기준 회전각 (Turn-table)
   double radius = 8.0; // 카메라와 목표 지점 사이의 거리 (Zoom)
 
+  DynamicLibrary _loadNativeLibrary() {
+    const String libName = 'point_glass_opengl_core';
+
+    // 1. Windows
+    // CMake가 빌드 시점에 .dll 파일을 .exe 실행 파일 바로 옆에 복사해 줍니다.
+    // 따라서 파일 이름만 부르면 OS가 현재 폴더에서 바로 찾아냅니다.
+    if (Platform.isWindows) {
+      return DynamicLibrary.open('$libName.dll');
+    }
+    // 2. Ubuntu (Linux) & Android
+    // Linux 역시 CMake가 빌드 결과물(lib 폴더)에 .so를 넣어주어 시스템이 인식하게 합니다.
+    else if (Platform.isLinux || Platform.isAndroid) {
+      return DynamicLibrary.open('lib$libName.so');
+    }
+    // 4. 예외 처리
+    else {
+      throw UnsupportedError('Unsupported OS: ${Platform.operatingSystem}');
+    }
+  }
+
   /// 플러그인 초기화: 네이티브 라이브러리를 로드하고 FFI 함수들을 연결합니다.
   Future<void> initialize({int width = 400, int height = 400}) async {
     // OS에 맞는 동적 라이브러리(.dll 또는 .so) 로드
-    _dylib = DynamicLibrary.open(
-      Platform.isWindows
-          ? '../rust/target/debug/point_glass_opengl_core.dll'
-          : '../rust/target/debug/libpoint_glass_opengl_core.so',
-    );
+    _dylib = _loadNativeLibrary();
 
     // FFI 함수 룩업 및 캐싱 (매 호출마다 룩업하면 느려지므로 초기화 시점에 수행)
     _createRenderer = _dylib
@@ -132,6 +171,11 @@ class PointGlassOpenGLController with ChangeNotifier {
     _project3DToScreenBatch = _dylib
         .lookup<NativeFunction<Project3DToScreenBatchC>>(
           'project_3d_to_screen_batch',
+        )
+        .asFunction();
+    _setPointCloudDisplayParams = _dylib
+        .lookup<NativeFunction<SetPointCloudDisplayParamsC>>(
+          'set_point_cloud_display_params',
         )
         .asFunction();
 
@@ -234,14 +278,18 @@ class PointGlassOpenGLController with ChangeNotifier {
   }
 
   // ============================================================================
-  // [사용자 공개 API] 점, 선, 면 데이터를 업데이트하고 즉시 화면을 갱신합니다.
-  // 데이터 포맷: [X, Y, Z, R, G, B, A, Size/Thickness] (정점 1개당 8개의 Float)
+  // [사용자 공개 API] 점 데이터를 업데이트하고 즉시 화면을 갱신합니다.
+  // 데이터 포맷: [X, Y, Z, Value] (정점 1개당 4개의 Float)
   // ============================================================================
   void setPoints(Float32List points) {
     _sendDataToRust(_setPoints, points);
     render();
   }
 
+  // ============================================================================
+  // [사용자 공개 API] 선, 면 데이터를 업데이트하고 즉시 화면을 갱신합니다.
+  // 데이터 포맷: [X, Y, Z, R, G, B, A, Size/Thickness] (정점 1개당 8개의 Float)
+  // ============================================================================
   void setLines(Float32List lines) {
     _sendDataToRust(_setLines, lines);
     render();
@@ -250,6 +298,26 @@ class PointGlassOpenGLController with ChangeNotifier {
   void setPolygons(Float32List polygons) {
     _sendDataToRust(_setPolygons, polygons);
     render();
+  }
+
+  void setPointCloudDisplayParams(
+    double alpha,
+    double size,
+    double min,
+    double max,
+    PointGlassOpenGLPointsColorMode mode,
+  ) {
+    if (_rendererPtr != nullptr) {
+      _setPointCloudDisplayParams(
+        _rendererPtr!,
+        alpha,
+        size,
+        min,
+        max,
+        mode.value,
+      );
+      render();
+    }
   }
 
   // --- 카메라 제어 API ---

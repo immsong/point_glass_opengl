@@ -2,6 +2,7 @@
 export 'src/models/point_glass_opengl_points.dart';
 export 'src/models/point_glass_opengl_grid.dart';
 export 'src/models/point_glass_opengl_axis.dart';
+export 'src/models/point_glass_opengl_points_color_mode.dart';
 export 'src/widgets/point_glass_opengl_viewer.dart';
 
 // 필요 시 직접 제어할 수 있도록 컨트롤러 노출

@@ -215,7 +215,9 @@ class _BatchLabelPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (labels.isEmpty) return;
+    if (labels.isEmpty) {
+      return;
+    }
 
     // 1. 3D 좌표만 쫙 뽑음
     final List<vm.Vector3> positions3D = labels.map((e) => e.position).toList();
@@ -224,6 +226,10 @@ class _BatchLabelPainter extends CustomPainter {
     final List<Offset?> offsetsNDC = controller.project3DToScreenBatch(
       positions3D,
     );
+
+    if (offsetsNDC.isEmpty || offsetsNDC.length != labels.length) {
+      return;
+    }
 
     // 3. 그리기
     for (int i = 0; i < labels.length; i++) {
