@@ -34,13 +34,26 @@ class DataConverter {
       }
     }
 
+    if (result.isEmpty) {
+      return Float32List.fromList([
+        // dummy point
+        0.0, 0.0, 0.0,
+      ]);
+    }
+
     return Float32List.fromList(result);
   }
 
   /// Grid 설정값을 OpenGL Lines용 데이터로 변환
   /// 포맷: [X, Y, Z, R, G, B, A, Thickness]
   static Float32List convertGrid(PointGlassOpenGLGrid grid) {
-    if (!grid.enable) return Float32List(0);
+    if (!grid.enable) {
+      return Float32List.fromList([
+        // dummy line
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 시작점
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 끝점
+      ]);
+    }
 
     final List<double> result = [];
 
@@ -73,7 +86,15 @@ class DataConverter {
   /// 축(Axis) 설정값을 면(Polygons/Triangles) 데이터로 변환하여 두께를 구현
   /// 포맷: [X, Y, Z, R, G, B, A, 1.0] (8 floats per vertex)
   static Float32List convertAxisToPolygons(PointGlassOpenGLAxis axis) {
-    if (!axis.enable) return Float32List(0);
+    if (!axis.enable) {
+      return Float32List.fromList([
+        // dummy polygon
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 꼭짓점 1
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 꼭짓점 2
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 꼭짓점 3
+      ]);
+    }
+    ;
 
     final List<double> result = [];
 
