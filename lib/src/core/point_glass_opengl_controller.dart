@@ -22,6 +22,14 @@ typedef CreateRendererDart = Pointer<Void> Function();
 typedef RenderFrameC = Void Function(Pointer<Void> renderer);
 typedef RenderFrameDart = void Function(Pointer<Void> renderer);
 
+typedef RenderToBufferC =
+    Void Function(
+      Pointer<Void> renderer,
+      Pointer<Uint8> buffer,
+      Uint32 width,
+      Uint32 height,
+    );
+
 // 공통 데이터 전송 FFI (점, 선, 면 배열을 Rust로 넘길 때 사용)
 // Pointer<Float>는 Dart의 Float32List가 변환된 네이티브 메모리 주소입니다.
 typedef SetDataC =
@@ -180,9 +188,15 @@ class PointGlassOpenGLController with ChangeNotifier {
         .asFunction();
 
     // C++ 쪽으로 넘겨주기 위해 함수 포인터(주소) 자체를 추출
-    final renderFuncPointer = _dylib.lookup<NativeFunction<RenderFrameC>>(
-      'render_frame',
-    );
+    final renderFuncPtr = switch (Platform.operatingSystem) {
+      'windows' =>
+        _dylib
+            .lookup<NativeFunction<RenderToBufferC>>('render_to_buffer')
+            .address,
+      'linux' =>
+        _dylib.lookup<NativeFunction<RenderFrameC>>('render_frame').address,
+      final os => throw UnsupportedError('Unsupported OS: $os'),
+    };
 
     // 1. Rust 렌더러 생성 및 초기 상태 설정
     _rendererPtr = _createRenderer();
@@ -192,7 +206,7 @@ class PointGlassOpenGLController with ChangeNotifier {
     // 2. C++ 플러그인에 텍스처 생성 요청 (Rust 렌더러 주소와 해상도 전달)
     textureId = await _channel.invokeMethod<int>('createTexture', {
       'rendererPtr': _rendererPtr!.address,
-      'renderFuncPtr': renderFuncPointer.address,
+      'renderFuncPtr': renderFuncPtr,
       'width': width,
       'height': height,
     });
