@@ -1,4 +1,4 @@
-import 'dart:ffi';
+import 'dart:ffi' hide Size;
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -22,78 +22,87 @@ typedef CreateRendererDart = Pointer<Void> Function();
 typedef RenderFrameC = Void Function(Pointer<Void> renderer);
 typedef RenderFrameDart = void Function(Pointer<Void> renderer);
 
-typedef RenderToBufferC =
-    Void Function(
-      Pointer<Void> renderer,
-      Pointer<Uint8> buffer,
-      Uint32 width,
-      Uint32 height,
-    );
+typedef RenderToBufferC = Void Function(
+  Pointer<Void> renderer,
+  Pointer<Uint8> buffer,
+  Uint32 width,
+  Uint32 height,
+);
 
 // 공통 데이터 전송 FFI (점, 선, 면 배열을 Rust로 넘길 때 사용)
 // Pointer<Float>는 Dart의 Float32List가 변환된 네이티브 메모리 주소입니다.
-typedef SetDataC =
-    Void Function(Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
-typedef SetDataDart =
-    void Function(Pointer<Void> renderer, Pointer<Float> data, int length);
+typedef SetDataC = Void Function(
+    Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
+typedef SetDataDart = void Function(
+    Pointer<Void> renderer, Pointer<Float> data, int length);
 
-typedef UpdateCameraC =
-    Void Function(
-      Pointer<Void> renderer,
-      Float yaw,
-      Float pitch,
-      Float roll,
-      Float radius,
-    );
-typedef UpdateCameraDart =
-    void Function(
-      Pointer<Void> renderer,
-      double yaw,
-      double pitch,
-      double roll,
-      double radius,
-    );
-typedef ResizeRendererC =
-    Void Function(Pointer<Void> renderer, Uint32 width, Uint32 height);
-typedef ResizeRendererDart =
-    void Function(Pointer<Void> renderer, int width, int height);
+typedef UpdateCameraC = Void Function(
+  Pointer<Void> renderer,
+  Float yaw,
+  Float pitch,
+  Float roll,
+  Float radius,
+);
+typedef UpdateCameraDart = void Function(
+  Pointer<Void> renderer,
+  double yaw,
+  double pitch,
+  double roll,
+  double radius,
+);
+typedef ResizeRendererC = Void Function(
+    Pointer<Void> renderer, Uint32 width, Uint32 height);
+typedef ResizeRendererDart = void Function(
+    Pointer<Void> renderer, int width, int height);
 typedef PanCameraC = Void Function(Pointer<Void> renderer, Float dx, Float dy);
-typedef PanCameraDart =
-    void Function(Pointer<Void> renderer, double dx, double dy);
+typedef PanCameraDart = void Function(
+    Pointer<Void> renderer, double dx, double dy);
 
-typedef Project3DToScreenBatchC =
-    Void Function(
-      Pointer<Void> renderer,
-      Pointer<Float> inCoords,
-      IntPtr count,
-      Pointer<Float> outCoords,
-    );
-typedef Project3DToScreenBatchDart =
-    void Function(
-      Pointer<Void> renderer,
-      Pointer<Float> inCoords,
-      int count,
-      Pointer<Float> outCoords,
-    );
+typedef Project3DToScreenBatchC = Void Function(
+  Pointer<Void> renderer,
+  Pointer<Float> inCoords,
+  IntPtr count,
+  Pointer<Float> outCoords,
+);
+typedef Project3DToScreenBatchDart = void Function(
+  Pointer<Void> renderer,
+  Pointer<Float> inCoords,
+  int count,
+  Pointer<Float> outCoords,
+);
 
-typedef SetPointCloudDisplayParamsC =
-    Void Function(
-      Pointer<Void> renderer,
-      Float alpha,
-      Float size,
-      Float min,
-      Float max,
-      Int32 mode,
-    );
-typedef SetPointCloudDisplayParamsDart =
-    void Function(
-      Pointer<Void> renderer,
-      double alpha,
-      double size,
-      double min,
-      double max,
-      int mode,
-    );
+typedef SetPointCloudDisplayParamsC = Void Function(
+  Pointer<Void> renderer,
+  Float alpha,
+  Float size,
+  Float min,
+  Float max,
+  Int32 mode,
+);
+typedef SetPointCloudDisplayParamsDart = void Function(
+  Pointer<Void> renderer,
+  double alpha,
+  double size,
+  double min,
+  double max,
+  int mode,
+);
+
+typedef ScreenToWorldOnPlaneC = Uint8 Function(
+  Pointer<Void> renderer,
+  Float ndcX,
+  Float ndcY,
+  Float planeZ,
+  Pointer<Float> outPosition,
+);
+
+typedef ScreenToWorldOnPlaneDart = int Function(
+  Pointer<Void> renderer,
+  double ndcX,
+  double ndcY,
+  double planeZ,
+  Pointer<Float> outPosition,
+);
 
 // ============================================================================
 // [PointGlassController]
@@ -120,6 +129,8 @@ class PointGlassOpenGLController with ChangeNotifier {
   late PanCameraDart _panCamera;
 
   late Project3DToScreenBatchDart _project3DToScreenBatch;
+
+  late ScreenToWorldOnPlaneDart _screenToWorldOnPlane;
 
   late SetPointCloudDisplayParamsDart _setPointCloudDisplayParams;
 
@@ -158,27 +169,28 @@ class PointGlassOpenGLController with ChangeNotifier {
     _createRenderer = _dylib
         .lookup<NativeFunction<CreateRendererC>>('create_renderer')
         .asFunction();
-    _setPoints = _dylib
-        .lookup<NativeFunction<SetDataC>>('set_points')
-        .asFunction();
-    _setLines = _dylib
-        .lookup<NativeFunction<SetDataC>>('set_lines')
-        .asFunction();
-    _setPolygons = _dylib
-        .lookup<NativeFunction<SetDataC>>('set_polygons')
-        .asFunction();
+    _setPoints =
+        _dylib.lookup<NativeFunction<SetDataC>>('set_points').asFunction();
+    _setLines =
+        _dylib.lookup<NativeFunction<SetDataC>>('set_lines').asFunction();
+    _setPolygons =
+        _dylib.lookup<NativeFunction<SetDataC>>('set_polygons').asFunction();
     _updateCamera = _dylib
         .lookup<NativeFunction<UpdateCameraC>>('update_camera')
         .asFunction();
     _resizeRenderer = _dylib
         .lookup<NativeFunction<ResizeRendererC>>('resize_renderer')
         .asFunction();
-    _panCamera = _dylib
-        .lookup<NativeFunction<PanCameraC>>('pan_camera')
-        .asFunction();
+    _panCamera =
+        _dylib.lookup<NativeFunction<PanCameraC>>('pan_camera').asFunction();
     _project3DToScreenBatch = _dylib
         .lookup<NativeFunction<Project3DToScreenBatchC>>(
           'project_3d_to_screen_batch',
+        )
+        .asFunction();
+    _screenToWorldOnPlane = _dylib
+        .lookup<NativeFunction<ScreenToWorldOnPlaneC>>(
+          'screen_to_world_on_plane',
         )
         .asFunction();
     _setPointCloudDisplayParams = _dylib
@@ -189,10 +201,9 @@ class PointGlassOpenGLController with ChangeNotifier {
 
     // C++ 쪽으로 넘겨주기 위해 함수 포인터(주소) 자체를 추출
     final renderFuncPtr = switch (Platform.operatingSystem) {
-      'windows' =>
-        _dylib
-            .lookup<NativeFunction<RenderToBufferC>>('render_to_buffer')
-            .address,
+      'windows' => _dylib
+          .lookup<NativeFunction<RenderToBufferC>>('render_to_buffer')
+          .address,
       'linux' =>
         _dylib.lookup<NativeFunction<RenderFrameC>>('render_frame').address,
       final os => throw UnsupportedError('Unsupported OS: $os'),
@@ -249,6 +260,50 @@ class PointGlassOpenGLController with ChangeNotifier {
     calloc.free(outPtr);
 
     return results;
+  }
+
+  // 화면 좌표를 3D 평면 상의 월드 좌표로 변환합니다.
+  vm.Vector3? screenToWorldOnPlane({
+    required Offset screenPosition,
+    required Size viewportSize,
+    double planeZ = 0.0,
+  }) {
+    if (_rendererPtr == null ||
+        viewportSize.width <= 0.0 ||
+        viewportSize.height <= 0.0) {
+      return null;
+    }
+
+    // Flutter 로컬 픽셀 좌표를 NDC [-1, 1]로 변환
+    final ndcX = (screenPosition.dx / viewportSize.width) * 2.0 - 1.0;
+
+    // 현재 project3DToScreenBatch 결과를 화면으로 바꾸는 방식이
+    // screenY = (ndcY + 1) / 2 * height 이므로 동일하게 역변환
+    final ndcY = (screenPosition.dy / viewportSize.height) * 2.0 - 1.0;
+
+    final outPtr = calloc<Float>(3);
+
+    try {
+      final result = _screenToWorldOnPlane(
+        _rendererPtr!,
+        ndcX,
+        ndcY,
+        planeZ,
+        outPtr,
+      );
+
+      if (result == 0) {
+        return null;
+      }
+
+      return vm.Vector3(
+        outPtr[0],
+        outPtr[1],
+        outPtr[2],
+      );
+    } finally {
+      calloc.free(outPtr);
+    }
   }
 
   /// 창 크기 변경 시 호출되어 텍스처와 FBO 해상도를 업데이트합니다.
