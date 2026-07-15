@@ -2,7 +2,7 @@
 
 A Flutter package for high-performance 3D point cloud visualization using native Rust and OpenGL rendering.
 
-`point_glass_opengl` provides a native offscreen rendering pipeline for visualizing point cloud data in Flutter desktop applications. It supports OpenGL-based rendering, interactive 3D camera controls, grid and axis overlays, label projection, and real-time display parameter updates.
+`point_glass_opengl` provides a native offscreen rendering pipeline for visualizing point cloud data in Flutter desktop applications. It supports OpenGL-based rendering, interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, and real-time display parameter updates.
 
 ## Features
 
@@ -11,6 +11,7 @@ A Flutter package for high-performance 3D point cloud visualization using native
 * **Offscreen Rendering**: FBO- and `glReadPixels`-based rendering for Flutter texture integration.
 * **3D Camera Controls**: Built-in orbit, pan, roll, and zoom controls.
 * **Visualization Overlays**: Grid, axis, and 3D-to-2D label projection support.
+* **Mouse Coordinate Display**: Optional cursor overlay showing the corresponding X/Y position on the ground plane.
 * **Depth-based Color Mapping**: Real-time point cloud color mapping using a value range.
 * **Display Controls**: Runtime control of point size, alpha, value range, and color mode.
 * **Declarative Flutter API**: Flutter-friendly viewer models and external controller support.
@@ -32,7 +33,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  point_glass_opengl: ^0.1.0
+  point_glass_opengl: ^0.2.0
 ```
 
 Then run:
@@ -179,6 +180,30 @@ _controller.changeCameraZoom(scaleFactor);
 | Roll   | `rollCamera(deltaZ)`                |
 | Zoom   | `changeCameraZoom(scaleFactor)`     |
 
+## Mouse Coordinate Display
+
+`PointGlassOpenGLViewer` can display the X/Y coordinate corresponding to the current mouse position on the ground plane.
+
+The coordinate overlay is enabled by default.
+
+```dart
+PointGlassOpenGLViewer(
+  controller: _controller,
+  grid: PointGlassOpenGLGrid(),
+  axis: PointGlassOpenGLAxis(),
+  enableMouseCoordinate: true,
+);
+```
+
+To hide the coordinate overlay:
+
+```dart
+PointGlassOpenGLViewer(
+  controller: _controller,
+  enableMouseCoordinate: false,
+);
+```
+
 ## Viewer Components
 
 `point_glass_opengl` includes several built-in visualization components:
@@ -216,6 +241,7 @@ Rust Core Layer
 
 * This package currently focuses on Windows and Linux desktop environments.
 * Web and mobile platforms are not supported in the current release.
+* Mouse coordinates are displayed relative to the ground plane.
 * Point cloud data must be provided as `Float32List`.
 * Point data uses 4 float values per point: `X`, `Y`, `Z`, and `Value`.
 * Line and polygon data use 8 float values per vertex: `X`, `Y`, `Z`, `R`, `G`, `B`, `A`, and `Size/Thickness`.
