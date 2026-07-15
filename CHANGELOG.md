@@ -1,3 +1,9 @@
+## 0.2.0
+
+* Added optional mouse coordinate display to `PointGlassOpenGLViewer`.
+* Added the `enableMouseCoordinate` option for controlling coordinate visibility.
+* Improved pointer interaction and label repaint behavior.
+
 ## 0.1.0
 
 * Initial release.
