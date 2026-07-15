@@ -1101,6 +1101,121 @@ fn multiply_matrices(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     res
 }
 
+// 4x4 matrix 역행렬 계산
+//
+// 입력과 출력은 기존 OpenGL 코드와 동일한 column-major 형식을 사용.
+//
+// 화면의 NDC 좌표를 다시 3D 좌표로 되돌리려면
+// MVP matrix의 역행렬이 필요함.
+//
+// 처리 방식:
+//
+// 1. column-major 배열을 행 단위 augmented matrix로 변환
+// 2. Gauss-Jordan elimination으로 역행렬 계산
+// 3. 결과를 다시 column-major 배열로 변환
+//
+// 역행렬을 만들 수 없는 singular matrix인 경우 None 반환.
+fn invert_matrix(matrix: [f32; 16]) -> Option<[f32; 16]> {
+    // 왼쪽에는 원본 matrix,
+    // 오른쪽에는 identity matrix를 배치.
+    //
+    // [M | I]
+    let mut augmented = [[0.0f32; 8]; 4];
+
+    for row in 0..4 {
+        for col in 0..4 {
+            // 입력 matrix는 column-major 형식
+            augmented[row][col] = matrix[col * 4 + row];
+        }
+
+        augmented[row][4 + row] = 1.0;
+    }
+
+    // Gauss-Jordan elimination 수행
+    for pivot_col in 0..4 {
+        // 현재 column에서 절댓값이 가장 큰 값을 pivot으로 선택.
+        //
+        // 작은 값을 pivot으로 사용하면 부동소수점 오차가 커질 수 있으므로
+        // partial pivoting을 적용.
+        let mut pivot_row = pivot_col;
+
+        for row in (pivot_col + 1)..4 {
+            if augmented[row][pivot_col].abs() > augmented[pivot_row][pivot_col].abs() {
+                pivot_row = row;
+            }
+        }
+
+        // pivot이 거의 0이면 역행렬을 만들 수 없는 matrix.
+        if augmented[pivot_row][pivot_col].abs() < 1.0e-8 {
+            return None;
+        }
+
+        // 필요한 경우 현재 row와 pivot row 교환
+        if pivot_row != pivot_col {
+            augmented.swap(pivot_row, pivot_col);
+        }
+
+        // pivot 값을 1로 정규화
+        let pivot = augmented[pivot_col][pivot_col];
+
+        for col in 0..8 {
+            augmented[pivot_col][col] /= pivot;
+        }
+
+        // 다른 row의 현재 column 값을 0으로 제거
+        for row in 0..4 {
+            if row == pivot_col {
+                continue;
+            }
+
+            let factor = augmented[row][pivot_col];
+
+            for col in 0..8 {
+                augmented[row][col] -= factor * augmented[pivot_col][col];
+            }
+        }
+    }
+
+    // 오른쪽에 만들어진 역행렬을
+    // OpenGL column-major 배열로 다시 변환
+    let mut inverse = [0.0f32; 16];
+
+    for row in 0..4 {
+        for col in 0..4 {
+            inverse[col * 4 + row] = augmented[row][4 + col];
+        }
+    }
+
+    Some(inverse)
+}
+
+// 4x4 matrix와 4차원 vector 곱셈
+//
+// 기존 shader와 project_3d_to_screen_batch()에서 사용하는 것과
+// 동일한 OpenGL column-major 계산 방식을 사용.
+//
+// result = matrix * vector
+fn transform_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
+    [
+        matrix[0] * vector[0]
+            + matrix[4] * vector[1]
+            + matrix[8] * vector[2]
+            + matrix[12] * vector[3],
+        matrix[1] * vector[0]
+            + matrix[5] * vector[1]
+            + matrix[9] * vector[2]
+            + matrix[13] * vector[3],
+        matrix[2] * vector[0]
+            + matrix[6] * vector[1]
+            + matrix[10] * vector[2]
+            + matrix[14] * vector[3],
+        matrix[3] * vector[0]
+            + matrix[7] * vector[1]
+            + matrix[11] * vector[2]
+            + matrix[15] * vector[3],
+    ]
+}
+
 // ============================================================================
 // FFI
 // ============================================================================
@@ -1432,6 +1547,145 @@ pub extern "C" fn project_3d_to_screen_batch(
             }
         }
     }
+}
+
+// 화면 좌표를 지정한 Z 평면의 3D 좌표로 변환
+//
+// Flutter에서 전달한 마우스 화면 좌표를 기준으로
+// camera에서 3D 공간으로 향하는 ray를 생성하고,
+// 그 ray가 지정된 Z 평면과 만나는 위치를 계산.
+//
+// 주로 다음 용도로 사용:
+//
+// - 마우스가 가리키는 grid 좌표 표시
+// - Z = 0 바닥 평면의 X/Y 위치 표시
+// - 3D viewer 위치 선택
+//
+// 입력:
+//
+// r            : Renderer pointer
+// ndc_x        : 화면 X 좌표를 -1.0 ~ 1.0으로 변환한 NDC 값
+// ndc_y        : 화면 Y 좌표를 -1.0 ~ 1.0으로 변환한 NDC 값
+// plane_z      : 교차점을 계산할 Z 평면 높이
+// out_position : 계산된 [x, y, z]를 저장할 배열 pointer
+//
+// 출력:
+//
+// 1 : 교차점 계산 성공
+// 0 : 잘못된 pointer, 역행렬 계산 실패, 평면과 교차하지 않는 경우
+//
+// 좌표 변환 과정:
+//
+// 1. 현재 camera 상태로 MVP matrix 계산
+// 2. MVP 역행렬 계산
+// 3. NDC near/far 좌표를 3D 좌표로 역투영
+// 4. near → far 방향으로 ray 생성
+// 5. ray와 Z = plane_z 평면의 교차점 계산
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_to_world_on_plane(
+    r: *mut c_void,
+    ndc_x: f32,
+    ndc_y: f32,
+    plane_z: f32,
+    out_position: *mut f32,
+) -> u8 {
+    // Renderer 또는 출력 buffer가 유효하지 않으면 계산 불가
+    if r.is_null() || out_position.is_null() {
+        return 0;
+    }
+
+    let renderer = unsafe { &*(r as *mut Renderer) };
+
+    // project_3d_to_screen_batch() 및 실제 rendering에서 사용하는 것과
+    // 동일한 MVP matrix를 사용해야 화면과 좌표가 정확하게 일치함.
+    let mvp = renderer.calculate_mvp();
+
+    // 화면 좌표를 3D 좌표로 되돌리기 위해 MVP 역행렬 계산
+    let inverse_mvp = match invert_matrix(mvp) {
+        Some(matrix) => matrix,
+        None => return 0,
+    };
+
+    // OpenGL NDC의 depth 범위:
+    //
+    // near plane = -1.0
+    // far plane  =  1.0
+    //
+    // 같은 화면 X/Y 위치에서 near와 far 좌표를 각각 생성하면
+    // 두 점을 연결하는 3D picking ray를 만들 수 있음.
+    let near_clip = [ndc_x, ndc_y, -1.0, 1.0];
+    let far_clip = [ndc_x, ndc_y, 1.0, 1.0];
+
+    // clip/NDC 좌표를 object 좌표로 역투영
+    let near_world4 = transform_vec4(inverse_mvp, near_clip);
+    let far_world4 = transform_vec4(inverse_mvp, far_clip);
+
+    // perspective divide를 수행하려면 w가 0이 아니어야 함.
+    if near_world4[3].abs() < f32::EPSILON || far_world4[3].abs() < f32::EPSILON {
+        return 0;
+    }
+
+    // homogeneous 좌표를 일반 3D 좌표로 변환
+    let near_world = [
+        near_world4[0] / near_world4[3],
+        near_world4[1] / near_world4[3],
+        near_world4[2] / near_world4[3],
+    ];
+
+    let far_world = [
+        far_world4[0] / far_world4[3],
+        far_world4[1] / far_world4[3],
+        far_world4[2] / far_world4[3],
+    ];
+
+    // near point에서 far point로 향하는 ray 방향 계산
+    //
+    // 평면 교차 계산에서는 방향 vector를 normalize할 필요가 없음.
+    let ray_direction = [
+        far_world[0] - near_world[0],
+        far_world[1] - near_world[1],
+        far_world[2] - near_world[2],
+    ];
+
+    // ray의 Z 방향 성분이 거의 0이면
+    // Z 평면과 평행하므로 교차점을 계산할 수 없음.
+    if ray_direction[2].abs() < 1.0e-6 {
+        return 0;
+    }
+
+    // Ray 식:
+    //
+    // P(t) = near_world + ray_direction * t
+    //
+    // P(t).z = plane_z가 되는 t를 계산.
+    let distance = (plane_z - near_world[2]) / ray_direction[2];
+
+    // 교차점이 near point의 반대 방향에 있거나
+    // 계산 결과가 유효하지 않으면 실패 처리.
+    if !distance.is_finite() || distance < 0.0 {
+        return 0;
+    }
+
+    let intersection = [
+        near_world[0] + ray_direction[0] * distance,
+        near_world[1] + ray_direction[1] * distance,
+        near_world[2] + ray_direction[2] * distance,
+    ];
+
+    // NaN이나 infinity가 포함된 결과는 Flutter로 전달하지 않음.
+    if !intersection[0].is_finite() || !intersection[1].is_finite() || !intersection[2].is_finite()
+    {
+        return 0;
+    }
+
+    // Dart에서 전달한 Float 배열에 결과 저장
+    unsafe {
+        *out_position.add(0) = intersection[0];
+        *out_position.add(1) = intersection[1];
+        *out_position.add(2) = intersection[2];
+    }
+
+    1
 }
 
 // Windows 전용 render_to_buffer
