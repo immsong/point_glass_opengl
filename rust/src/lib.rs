@@ -1,5 +1,10 @@
-use std::ffi::c_void;
+use std::ffi::{CStr, CString, c_void};
 use std::ptr;
+use std::sync::Mutex;
+use std::thread::ThreadId;
+
+#[cfg(target_os = "android")]
+type AndroidEgl = khronos_egl::DynamicInstance<khronos_egl::EGL1_4>;
 
 // Windows에서 OpenGL 함수를 동적으로 가져오기 위한 WinAPI
 // opengl32.dll에서 기본 OpenGL 함수 주소를 찾을 때 사용
@@ -30,9 +35,13 @@ mod wgl_helper {
     // user32.dll 함수들
     // CreateWindowExA: OpenGL context 생성을 위한 dummy window 생성
     // GetDC: window의 device context 획득
+    // ReleaseDC: device context 해제
+    // DestroyWindow: dummy window 삭제
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetDC(hWnd: isize) -> isize;
+        fn ReleaseDC(hWnd: isize, hDC: isize) -> i32;
+        fn DestroyWindow(hWnd: isize) -> i32;
 
         fn CreateWindowExA(
             ex: u32,
@@ -60,6 +69,7 @@ mod wgl_helper {
 
     // opengl32.dll의 WGL 함수들
     // wglCreateContext: legacy OpenGL context 생성
+    // wglDeleteContext: OpenGL context 삭제
     // wglMakeCurrent: 현재 thread에 OpenGL context 연결
     // wglGetProcAddress: 확장 OpenGL/WGL 함수 주소 조회
     #[link(name = "opengl32")]
@@ -71,37 +81,57 @@ mod wgl_helper {
         pub fn wglGetProcAddress(name: *const u8) -> *const c_void;
     }
 
-    // thread_local:
-    // OpenGL context는 보통 thread에 묶여 있음.
-    // 따라서 thread마다 자기 context를 하나씩 가질 수 있게 저장.
-    //
-    // 주의:
-    // Flutter texture callback이 여러 thread에서 불리면 context가 thread마다 생길 수 있음.
-    // 지금 구조에서는 우선 동작 확인용으로 괜찮지만,
-    // 최종 안정화에서는 render thread를 하나로 고정하는 방식이 더 안전할 수 있음.
-    thread_local! {
-        static CTX: std::cell::RefCell<Option<(isize, isize)>> =
-            std::cell::RefCell::new(None);
+    struct WglContext {
+        hwnd: isize,
+        hdc: isize,
+        hglrc: isize,
     }
 
-    pub fn make_current() {
+    impl Drop for WglContext {
+        fn drop(&mut self) {
+            unsafe { destroy_context_parts(self.hwnd, self.hdc, self.hglrc) };
+        }
+    }
+
+    // OpenGL context는 thread에 current 상태로 연결되므로 thread별로 공유.
+    // 같은 render thread에서 여러 Renderer를 사용해도 하나의 context를 재사용.
+    thread_local! {
+        static CTX: std::cell::RefCell<Option<WglContext>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    unsafe fn destroy_context_parts(hwnd: isize, hdc: isize, hglrc: isize) {
+        unsafe {
+            if hglrc != 0 {
+                wglMakeCurrent(0, 0);
+                wglDeleteContext(hglrc);
+            }
+
+            if hwnd != 0 && hdc != 0 {
+                ReleaseDC(hwnd, hdc);
+            }
+
+            if hwnd != 0 {
+                DestroyWindow(hwnd);
+            }
+        }
+    }
+
+    pub fn make_current() -> Result<(), String> {
         CTX.with(|ctx| {
             let mut ctx_ref = ctx.borrow_mut();
 
-            // 현재 thread에 OpenGL context가 없으면 새로 생성
             if ctx_ref.is_none() {
-                // STATIC class를 이용해서 보이지 않는 dummy window 생성
-                // 이 window는 화면 표시 목적이 아니라 WGL context 생성용
                 let hwnd = unsafe {
                     CreateWindowExA(
                         0,
                         b"STATIC\0".as_ptr(),
-                        b"D\0".as_ptr(),
+                        b"PointGlassOpenGL\0".as_ptr(),
                         0,
                         0,
                         0,
-                        0,
-                        0,
+                        1,
+                        1,
                         0,
                         0,
                         0,
@@ -109,17 +139,16 @@ mod wgl_helper {
                     )
                 };
 
-                // dummy window의 device context 획득
-                let hdc = unsafe { GetDC(hwnd) };
+                if hwnd == 0 {
+                    return Err("CreateWindowExA failed".to_string());
+                }
 
-                // PIXELFORMATDESCRIPTOR를 byte array로 간단 구성
-                // 실제 구조체를 정의하지 않고 필요한 위치만 채운 방식
-                //
-                // pfd[0]  = size
-                // pfd[2]  = version
-                // pfd[4]  = flags
-                // pfd[9]  = color bits
-                // pfd[23] = depth bits
+                let hdc = unsafe { GetDC(hwnd) };
+                if hdc == 0 {
+                    unsafe { destroy_context_parts(hwnd, 0, 0) };
+                    return Err("GetDC failed".to_string());
+                }
+
                 let mut pfd = [0u8; 40];
                 pfd[0] = 40;
                 pfd[2] = 1;
@@ -127,59 +156,136 @@ mod wgl_helper {
                 pfd[9] = 32;
                 pfd[23] = 24;
 
-                // device context에 pixel format 설정
-                let pf = unsafe { ChoosePixelFormat(hdc, pfd.as_ptr()) };
-                unsafe { SetPixelFormat(hdc, pf, pfd.as_ptr()) };
+                let pixel_format = unsafe { ChoosePixelFormat(hdc, pfd.as_ptr()) };
+                if pixel_format == 0 {
+                    unsafe { destroy_context_parts(hwnd, hdc, 0) };
+                    return Err("ChoosePixelFormat failed".to_string());
+                }
 
-                // 먼저 legacy OpenGL context 생성
-                // 이유:
-                // wglCreateContextAttribsARB 같은 modern context 생성 함수는
-                // 기존 context가 current 상태여야 주소를 가져올 수 있음.
-                let temp_ctx = unsafe { wglCreateContext(hdc) };
-                unsafe { wglMakeCurrent(hdc, temp_ctx) };
+                if unsafe { SetPixelFormat(hdc, pixel_format, pfd.as_ptr()) } == 0 {
+                    unsafe { destroy_context_parts(hwnd, hdc, 0) };
+                    return Err("SetPixelFormat failed".to_string());
+                }
 
-                // 가능하면 OpenGL 3.3 Core Profile context 생성
-                let mut final_ctx = temp_ctx;
+                // wglCreateContextAttribsARB 주소를 얻기 위한 임시 legacy context.
+                let temp_context = unsafe { wglCreateContext(hdc) };
+                if temp_context == 0 {
+                    unsafe { destroy_context_parts(hwnd, hdc, 0) };
+                    return Err("wglCreateContext failed".to_string());
+                }
+
+                if unsafe { wglMakeCurrent(hdc, temp_context) } == 0 {
+                    unsafe { destroy_context_parts(hwnd, hdc, temp_context) };
+                    return Err("Failed to activate temporary WGL context".to_string());
+                }
 
                 let attrib_func =
                     unsafe { wglGetProcAddress(b"wglCreateContextAttribsARB\0".as_ptr()) };
 
-                if !attrib_func.is_null() {
-                    let wgl_create_context_attribs_arb: extern "system" fn(
-                        isize,
-                        isize,
-                        *const i32,
-                    )
-                        -> isize = unsafe { std::mem::transmute(attrib_func) };
-
-                    // OpenGL 3.3 Core Profile 요청
-                    let attribs = [
-                        0x2091, 3, // WGL_CONTEXT_MAJOR_VERSION_ARB = 3
-                        0x2092, 3, // WGL_CONTEXT_MINOR_VERSION_ARB = 3
-                        0x9126, 0x00000002, // WGL_CONTEXT_PROFILE_MASK_ARB = CORE
-                        0,
-                    ];
-
-                    let modern_ctx = wgl_create_context_attribs_arb(hdc, 0, attribs.as_ptr());
-
-                    // modern context 생성 성공 시 legacy context 제거 후 교체
-                    if modern_ctx != 0 {
-                        unsafe { wglMakeCurrent(0, 0) };
-                        unsafe { wglDeleteContext(temp_ctx) };
-                        unsafe { wglMakeCurrent(hdc, modern_ctx) };
-
-                        final_ctx = modern_ctx;
-                    }
+                if attrib_func.is_null() {
+                    unsafe { destroy_context_parts(hwnd, hdc, temp_context) };
+                    return Err(
+                        "OpenGL 3.3 Core Profile is unavailable: wglCreateContextAttribsARB not found"
+                            .to_string(),
+                    );
                 }
 
-                // 현재 thread에 context 저장
-                *ctx_ref = Some((hdc, final_ctx));
+                let create_context_attribs: unsafe extern "system" fn(
+                    isize,
+                    isize,
+                    *const i32,
+                ) -> isize = unsafe { std::mem::transmute(attrib_func) };
+
+                let attribs = [
+                    0x2091, 3, // WGL_CONTEXT_MAJOR_VERSION_ARB
+                    0x2092, 3, // WGL_CONTEXT_MINOR_VERSION_ARB
+                    0x9126, 0x00000001, // WGL_CONTEXT_PROFILE_MASK_ARB / CORE
+                    0,
+                ];
+
+                let modern_context =
+                    unsafe { create_context_attribs(hdc, 0, attribs.as_ptr()) };
+
+                if modern_context == 0 {
+                    unsafe { destroy_context_parts(hwnd, hdc, temp_context) };
+                    return Err("Failed to create OpenGL 3.3 Core Profile context".to_string());
+                }
+
+                unsafe {
+                    wglMakeCurrent(0, 0);
+                    wglDeleteContext(temp_context);
+                }
+
+                if unsafe { wglMakeCurrent(hdc, modern_context) } == 0 {
+                    unsafe { destroy_context_parts(hwnd, hdc, modern_context) };
+                    return Err("Failed to activate OpenGL 3.3 Core Profile context".to_string());
+                }
+
+                *ctx_ref = Some(WglContext {
+                    hwnd,
+                    hdc,
+                    hglrc: modern_context,
+                });
             }
 
-            // 저장된 context를 현재 thread의 current context로 설정
-            let (hdc, hglrc) = ctx_ref.unwrap();
-            unsafe { wglMakeCurrent(hdc, hglrc) };
-        });
+            let context = ctx_ref
+                .as_ref()
+                .ok_or_else(|| "WGL context is not initialized".to_string())?;
+
+            if unsafe { wglMakeCurrent(context.hdc, context.hglrc) } == 0 {
+                return Err("wglMakeCurrent failed".to_string());
+            }
+
+            Ok(())
+        })
+    }
+}
+
+// ============================================================================
+// Shader profile
+// ============================================================================
+//
+// shader는 OS가 아니라 현재 OpenGL context 종류에 맞춰 선택 필요.
+//
+// OpenGL ES 3.0+ context      -> GLSL ES 3.00 (#version 300 es)
+// Desktop OpenGL 3.3+ context -> GLSL 3.30 Core (#version 330 core)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShaderProfile {
+    Gles300,
+    Gl330,
+}
+
+struct ShaderSources {
+    points_vert: &'static str,
+    points_frag: &'static str,
+    gizmos_vert: &'static str,
+    gizmos_frag: &'static str,
+}
+
+const POINTS_VERT_GLES300: &str = include_str!("../shaders/gles300/points.vert");
+const POINTS_FRAG_GLES300: &str = include_str!("../shaders/gles300/points.frag");
+const GIZMOS_VERT_GLES300: &str = include_str!("../shaders/gles300/gizmos.vert");
+const GIZMOS_FRAG_GLES300: &str = include_str!("../shaders/gles300/gizmos.frag");
+
+const POINTS_VERT_GL330: &str = include_str!("../shaders/gl330/points.vert");
+const POINTS_FRAG_GL330: &str = include_str!("../shaders/gl330/points.frag");
+const GIZMOS_VERT_GL330: &str = include_str!("../shaders/gl330/gizmos.vert");
+const GIZMOS_FRAG_GL330: &str = include_str!("../shaders/gl330/gizmos.frag");
+
+fn shader_sources(profile: ShaderProfile) -> ShaderSources {
+    match profile {
+        ShaderProfile::Gles300 => ShaderSources {
+            points_vert: POINTS_VERT_GLES300,
+            points_frag: POINTS_FRAG_GLES300,
+            gizmos_vert: GIZMOS_VERT_GLES300,
+            gizmos_frag: GIZMOS_FRAG_GLES300,
+        },
+        ShaderProfile::Gl330 => ShaderSources {
+            points_vert: POINTS_VERT_GL330,
+            points_frag: POINTS_FRAG_GL330,
+            gizmos_vert: GIZMOS_VERT_GL330,
+            gizmos_frag: GIZMOS_FRAG_GL330,
+        },
     }
 }
 
@@ -193,6 +299,10 @@ mod wgl_helper {
 pub struct Renderer {
     // OpenGL 함수 로딩, shader, buffer 초기화 여부
     gl_loaded: bool,
+
+    // OpenGL resource를 생성한 render thread.
+    // 같은 Renderer의 GL resource를 다른 thread/context에서 사용하는 것을 방지.
+    gl_thread_id: Option<ThreadId>,
 
     // point cloud용 shader program
     shader_points: u32,
@@ -267,12 +377,24 @@ pub struct Renderer {
     value_min: f32,
     value_max: f32,
     color_mode: i32,
+
+    #[cfg(target_os = "android")]
+    pub egl: Option<AndroidEgl>,
+    #[cfg(target_os = "android")]
+    pub display: Option<khronos_egl::Display>,
+    #[cfg(target_os = "android")]
+    pub egl_surface: Option<khronos_egl::Surface>,
+    #[cfg(target_os = "android")]
+    pub context: Option<khronos_egl::Context>,
+    #[cfg(target_os = "android")]
+    pub config: Option<khronos_egl::Config>,
 }
 
 impl Renderer {
     pub fn new() -> Self {
         Self {
             gl_loaded: false,
+            gl_thread_id: None,
 
             shader_points: 0,
             shader_gizmos: 0,
@@ -316,105 +438,247 @@ impl Renderer {
             value_min: -2.0,
             value_max: 5.0,
             color_mode: 0,
+
+            #[cfg(target_os = "android")]
+            egl: None,
+            #[cfg(target_os = "android")]
+            display: None,
+            #[cfg(target_os = "android")]
+            egl_surface: None,
+            #[cfg(target_os = "android")]
+            context: None,
+            #[cfg(target_os = "android")]
+            config: None,
         }
     }
 
-    // shader 파일 문자열을 OpenGL이 읽기 좋은 형태로 정리
-    //
-    // 처리 내용:
-    // - UTF-8 BOM 제거
-    // - Windows CRLF 줄바꿈을 LF로 변환
-    // - 앞쪽 공백 제거
-    // - #version이 없으면 기본으로 #version 330 core 추가
-    //
-    // Windows OpenGL driver는 #version 라인에 민감한 편이라
-    // 이 정리가 없으면 shader compile error가 나기 쉬움.
-    fn clean_shader_source(src: &str) -> String {
-        let s = src
+    // OpenGL resource를 최초 생성한 thread와 현재 thread가 같은지 확인.
+    // GL context/resource는 생성 thread에서만 사용하도록 제한.
+    fn bind_gl_thread(&mut self) -> Result<(), String> {
+        let current = std::thread::current().id();
+
+        if let Some(owner) = self.gl_thread_id.as_ref() {
+            if owner != &current {
+                return Err(format!(
+                    "OpenGL renderer thread changed: owner={owner:?}, current={current:?}"
+                ));
+            }
+        } else {
+            self.gl_thread_id = Some(current);
+        }
+
+        Ok(())
+    }
+
+    fn parse_version_number(value: &str) -> Option<(u32, u32)> {
+        value.split_whitespace().find_map(|token| {
+            if !token.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+                return None;
+            }
+
+            let mut parts = token.split('.');
+            let major = parts.next()?.parse::<u32>().ok()?;
+            let minor_text = parts.next()?;
+            let minor_digits: String = minor_text
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            let minor = minor_digits.parse::<u32>().ok()?;
+
+            Some((major, minor))
+        })
+    }
+
+    unsafe fn read_gl_string(name: u32, label: &str) -> Result<String, String> {
+        let value = unsafe { gl::GetString(name) };
+
+        if value.is_null() {
+            return Err(format!("glGetString({label}) returned null"));
+        }
+
+        Ok(unsafe { CStr::from_ptr(value.cast()) }
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    // 현재 연결된 context의 API와 버전을 검사하여 사용할 shader profile 반환.
+    // OS가 아니라 glGetString(GL_VERSION)의 실제 결과를 기준으로 판단.
+    unsafe fn detect_shader_profile() -> Result<ShaderProfile, String> {
+        let gl_version = unsafe { Self::read_gl_string(gl::VERSION, "GL_VERSION") }?;
+        let glsl_version =
+            unsafe { Self::read_gl_string(gl::SHADING_LANGUAGE_VERSION, "GLSL_VERSION") }?;
+
+        println!("OpenGL version: {gl_version}");
+        println!("GLSL version: {glsl_version}");
+
+        let gl_number = Self::parse_version_number(&gl_version)
+            .ok_or_else(|| format!("Unable to parse OpenGL version: {gl_version}"))?;
+        let glsl_number = Self::parse_version_number(&glsl_version)
+            .ok_or_else(|| format!("Unable to parse GLSL version: {glsl_version}"))?;
+
+        if gl_version.starts_with("OpenGL ES") {
+            if gl_number < (3, 0) {
+                return Err(format!(
+                    "OpenGL ES 3.0 or later is required, current version: {gl_version}"
+                ));
+            }
+
+            if !glsl_version.contains("GLSL ES") || glsl_number < (3, 0) {
+                return Err(format!(
+                    "GLSL ES 3.00 or later is required, current version: {glsl_version}"
+                ));
+            }
+
+            return Ok(ShaderProfile::Gles300);
+        }
+
+        if gl_number < (3, 3) {
+            return Err(format!(
+                "Desktop OpenGL 3.3 or later is required, current version: {gl_version}"
+            ));
+        }
+
+        if glsl_version.contains("GLSL ES") || glsl_number < (3, 30) {
+            return Err(format!(
+                "Desktop GLSL 3.30 or later is required, current version: {glsl_version}"
+            ));
+        }
+
+        Ok(ShaderProfile::Gl330)
+    }
+
+    // shader source를 정규화하고 선택된 profile의 #version인지 확인.
+    // shader 파일에 버전이 빠지거나 서로 뒤바뀐 경우 임의 보정하지 않고 오류 처리.
+    fn clean_shader_source(src: &str, profile: ShaderProfile) -> Result<String, String> {
+        let normalized = src
             .trim_start_matches('\u{feff}')
             .replace("\r\n", "\n")
             .replace('\r', "\n");
 
-        let s = s.trim_start();
+        let normalized = normalized.trim_start();
+        let first_line = normalized.lines().next().unwrap_or_default().trim();
 
-        if s.starts_with("#version") {
-            s.to_string()
-        } else {
-            format!("#version 330 core\n{s}")
+        let expected_version = match profile {
+            ShaderProfile::Gles300 => "#version 300 es",
+            ShaderProfile::Gl330 => "#version 330 core",
+        };
+
+        if first_line != expected_version {
+            return Err(format!(
+                "Shader profile mismatch: expected '{expected_version}', but starts with '{first_line}'"
+            ));
         }
+
+        Ok(normalized.to_string())
     }
 
-    // shader source 하나를 compile
-    unsafe fn compile_shader(shader_type: u32, source: &str) -> u32 {
+    unsafe fn compile_shader(shader_type: u32, source: &str) -> Result<u32, String> {
+        let shader = unsafe { gl::CreateShader(shader_type) };
+
+        if shader == 0 {
+            return Err("glCreateShader returned 0".to_string());
+        }
+
+        let c_source = match CString::new(source) {
+            Ok(source) => source,
+            Err(_) => {
+                unsafe { gl::DeleteShader(shader) };
+                return Err("Shader source contains an interior null byte".to_string());
+            }
+        };
+
         unsafe {
-            let shader = gl::CreateShader(shader_type);
-            let c_str = std::ffi::CString::new(source).unwrap();
-
-            // shader source 전달
-            gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null());
-
-            // 실제 shader compile
+            gl::ShaderSource(shader, 1, &c_source.as_ptr(), ptr::null());
             gl::CompileShader(shader);
+        }
 
-            // compile 성공 여부 확인
-            let mut success = 0;
-            gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
+        let mut success = 0;
+        unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success) };
 
-            // 실패 시 driver가 제공하는 error log 출력
-            if success == 0 {
-                let mut len = 0;
-                gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
+        if success == 0 {
+            let mut length = 0;
+            unsafe { gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut length) };
 
-                let mut log = vec![0u8; len as usize];
-                gl::GetShaderInfoLog(shader, len, ptr::null_mut(), log.as_mut_ptr() as *mut i8);
-
-                println!(
-                    "Shader compile error:\n{}\n--- source preview ---\n{}",
-                    String::from_utf8_lossy(&log),
-                    source.lines().take(8).collect::<Vec<_>>().join("\n"),
-                );
+            let mut log = vec![0u8; length.max(1) as usize];
+            unsafe {
+                gl::GetShaderInfoLog(shader, length, ptr::null_mut(), log.as_mut_ptr().cast());
+                gl::DeleteShader(shader);
             }
 
-            shader
+            let log = String::from_utf8_lossy(&log)
+                .trim_matches(char::from(0))
+                .to_string();
+            let preview = source.lines().take(12).collect::<Vec<_>>().join("\n");
+
+            return Err(format!(
+                "Shader compile failed:\n{log}\n--- source preview ---\n{preview}"
+            ));
         }
+
+        Ok(shader)
     }
 
-    // vertex shader + fragment shader를 하나의 program으로 link
-    unsafe fn create_program(v_src: &str, f_src: &str) -> u32 {
+    unsafe fn create_program(
+        v_src: &str,
+        f_src: &str,
+        profile: ShaderProfile,
+    ) -> Result<u32, String> {
+        let vertex_source = Self::clean_shader_source(v_src, profile)?;
+        let fragment_source = Self::clean_shader_source(f_src, profile)?;
+
+        let vertex_shader = unsafe { Self::compile_shader(gl::VERTEX_SHADER, &vertex_source) }
+            .map_err(|error| format!("Vertex {error}"))?;
+
+        let fragment_shader =
+            match unsafe { Self::compile_shader(gl::FRAGMENT_SHADER, &fragment_source) } {
+                Ok(shader) => shader,
+                Err(error) => {
+                    unsafe { gl::DeleteShader(vertex_shader) };
+                    return Err(format!("Fragment {error}"));
+                }
+            };
+
+        let program = unsafe { gl::CreateProgram() };
+        if program == 0 {
+            unsafe {
+                gl::DeleteShader(vertex_shader);
+                gl::DeleteShader(fragment_shader);
+            }
+            return Err("glCreateProgram returned 0".to_string());
+        }
+
         unsafe {
-            let v_src = Self::clean_shader_source(v_src);
-            let f_src = Self::clean_shader_source(f_src);
+            gl::AttachShader(program, vertex_shader);
+            gl::AttachShader(program, fragment_shader);
+            gl::LinkProgram(program);
+        }
 
-            let vs = Self::compile_shader(gl::VERTEX_SHADER, &v_src);
-            let fs = Self::compile_shader(gl::FRAGMENT_SHADER, &f_src);
+        let mut success = 0;
+        unsafe { gl::GetProgramiv(program, gl::LINK_STATUS, &mut success) };
 
-            let prog = gl::CreateProgram();
+        unsafe {
+            gl::DeleteShader(vertex_shader);
+            gl::DeleteShader(fragment_shader);
+        }
 
-            gl::AttachShader(prog, vs);
-            gl::AttachShader(prog, fs);
-            gl::LinkProgram(prog);
+        if success == 0 {
+            let mut length = 0;
+            unsafe { gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut length) };
 
-            // link 성공 여부 확인
-            let mut success = 0;
-            gl::GetProgramiv(prog, gl::LINK_STATUS, &mut success);
-
-            if success == 0 {
-                let mut len = 0;
-                gl::GetProgramiv(prog, gl::INFO_LOG_LENGTH, &mut len);
-
-                let mut log = vec![0u8; len as usize];
-                gl::GetProgramInfoLog(prog, len, ptr::null_mut(), log.as_mut_ptr() as *mut i8);
-
-                println!("Program link error: {}", String::from_utf8_lossy(&log));
+            let mut log = vec![0u8; length.max(1) as usize];
+            unsafe {
+                gl::GetProgramInfoLog(program, length, ptr::null_mut(), log.as_mut_ptr().cast());
+                gl::DeleteProgram(program);
             }
 
-            // program에 attach된 뒤에는 shader object 자체는 삭제해도 됨.
-            // program 내부에는 link 결과가 유지됨.
-            gl::DeleteShader(vs);
-            gl::DeleteShader(fs);
+            let log = String::from_utf8_lossy(&log)
+                .trim_matches(char::from(0))
+                .to_string();
 
-            prog
+            return Err(format!("Program link failed:\n{log}"));
         }
+
+        Ok(program)
     }
 
     // point cloud용 VAO/VBO 설정
@@ -489,91 +753,200 @@ impl Renderer {
     //
     // render()가 처음 호출될 때 한 번만 수행.
     // 이후에는 gl_loaded가 true라서 다시 하지 않음.
-    unsafe fn ensure_gl_loaded(&mut self) {
+    unsafe fn ensure_gl_loaded(&mut self) -> Result<(), String> {
+        self.bind_gl_thread()?;
+
         if self.gl_loaded {
-            return;
+            return Ok(());
+        }
+
+        #[cfg(target_os = "android")]
+        unsafe {
+            let libgles = libc::dlopen(
+                b"libGLESv3.so\0".as_ptr().cast(),
+                libc::RTLD_LAZY | libc::RTLD_LOCAL,
+            );
+            let libegl = libc::dlopen(
+                b"libEGL.so\0".as_ptr().cast(),
+                libc::RTLD_LAZY | libc::RTLD_LOCAL,
+            );
+
+            if libgles.is_null() {
+                return Err("Failed to open libGLESv3.so".to_string());
+            }
+
+            if libegl.is_null() {
+                return Err("Failed to open libEGL.so".to_string());
+            }
+
+            type EglGetProcAddress = unsafe extern "C" fn(*const libc::c_char) -> *const c_void;
+
+            let egl_get_proc_address = {
+                let address = libc::dlsym(libegl, b"eglGetProcAddress\0".as_ptr().cast());
+                if address.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute::<*mut c_void, EglGetProcAddress>(
+                        address,
+                    ))
+                }
+            };
+
+            gl::load_with(|name| {
+                let symbol = CString::new(name).expect("OpenGL symbol contains null byte");
+                let mut pointer = ptr::null();
+
+                if let Some(get_proc_address) = egl_get_proc_address {
+                    pointer = get_proc_address(symbol.as_ptr());
+                }
+
+                if pointer.is_null() {
+                    pointer = libc::dlsym(libgles, symbol.as_ptr()).cast_const();
+                }
+
+                if pointer.is_null() {
+                    pointer = libc::dlsym(libegl, symbol.as_ptr()).cast_const();
+                }
+
+                pointer
+            });
         }
 
         #[cfg(target_os = "linux")]
         unsafe {
-            // Linux에서는 libGL / libEGL / RTLD_DEFAULT에서 OpenGL 함수 주소를 탐색
-            let libgl = libc::dlopen(b"libGL.so.1\0".as_ptr() as *const _, libc::RTLD_LAZY);
-            let libegl = libc::dlopen(b"libEGL.so.1\0".as_ptr() as *const _, libc::RTLD_LAZY);
+            let libgl = libc::dlopen(
+                b"libGL.so.1\0".as_ptr().cast(),
+                libc::RTLD_LAZY | libc::RTLD_LOCAL,
+            );
+            let libegl = libc::dlopen(
+                b"libEGL.so.1\0".as_ptr().cast(),
+                libc::RTLD_LAZY | libc::RTLD_LOCAL,
+            );
+
+            if libgl.is_null() && libegl.is_null() {
+                return Err("Failed to open both libGL.so.1 and libEGL.so.1".to_string());
+            }
+
+            type GlxGetProcAddress = unsafe extern "C" fn(*const libc::c_uchar) -> *const c_void;
+            type EglGetProcAddress = unsafe extern "C" fn(*const libc::c_char) -> *const c_void;
+
+            let glx_get_proc_address = if libgl.is_null() {
+                None
+            } else {
+                let address = libc::dlsym(libgl, b"glXGetProcAddressARB\0".as_ptr().cast());
+                if address.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute::<*mut c_void, GlxGetProcAddress>(
+                        address,
+                    ))
+                }
+            };
+
+            let egl_get_proc_address = if libegl.is_null() {
+                None
+            } else {
+                let address = libc::dlsym(libegl, b"eglGetProcAddress\0".as_ptr().cast());
+                if address.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute::<*mut c_void, EglGetProcAddress>(
+                        address,
+                    ))
+                }
+            };
 
             gl::load_with(|name| {
-                let symbol = std::ffi::CString::new(name).unwrap();
+                let symbol = CString::new(name).expect("OpenGL symbol contains null byte");
+                let mut pointer = ptr::null();
 
-                let mut p = if libgl.is_null() {
-                    ptr::null_mut()
-                } else {
-                    libc::dlsym(libgl, symbol.as_ptr())
-                };
-
-                if p.is_null() && !libegl.is_null() {
-                    p = libc::dlsym(libegl, symbol.as_ptr());
+                if !libgl.is_null() {
+                    pointer = libc::dlsym(libgl, symbol.as_ptr()).cast_const();
                 }
 
-                if p.is_null() {
-                    p = libc::dlsym(libc::RTLD_DEFAULT, symbol.as_ptr());
+                if pointer.is_null() {
+                    if let Some(get_proc_address) = glx_get_proc_address {
+                        pointer = get_proc_address(symbol.as_ptr().cast());
+                    }
                 }
 
-                p
+                if pointer.is_null() && !libegl.is_null() {
+                    pointer = libc::dlsym(libegl, symbol.as_ptr()).cast_const();
+                }
+
+                if pointer.is_null() {
+                    if let Some(get_proc_address) = egl_get_proc_address {
+                        pointer = get_proc_address(symbol.as_ptr());
+                    }
+                }
+
+                if pointer.is_null() {
+                    pointer = libc::dlsym(libc::RTLD_DEFAULT, symbol.as_ptr()).cast_const();
+                }
+
+                pointer
             });
         }
 
         #[cfg(target_os = "windows")]
         unsafe {
-            // Windows에서는 먼저 WGL context를 current로 만들어야
-            // gl::load_with가 정상적으로 OpenGL 함수 주소를 얻을 수 있음.
-            wgl_helper::make_current();
+            wgl_helper::make_current()?;
 
-            let gl_lib = LoadLibraryA(b"opengl32.dll\0".as_ptr());
+            let gl_library = LoadLibraryA(b"opengl32.dll\0".as_ptr());
+            if gl_library == 0 {
+                return Err("Failed to load opengl32.dll".to_string());
+            }
 
             gl::load_with(|name| {
-                let symbol = std::ffi::CString::new(name).unwrap();
+                let symbol = CString::new(name).expect("OpenGL symbol contains null byte");
+                let mut pointer = wgl_helper::wglGetProcAddress(symbol.as_ptr().cast());
+                let address = pointer as usize;
 
-                // modern OpenGL 함수는 보통 wglGetProcAddress로 얻음.
-                let mut p = wgl_helper::wglGetProcAddress(symbol.as_ptr() as *const u8);
-                let p_addr = p as usize;
-
-                // 일부 기본 함수는 wglGetProcAddress가 이상한 값이나 null을 줄 수 있음.
-                // 그 경우 opengl32.dll의 GetProcAddress로 fallback.
-                if (p_addr == 0
-                    || p_addr == 1
-                    || p_addr == 2
-                    || p_addr == 3
-                    || p_addr == usize::MAX)
-                    && gl_lib != 0
-                {
-                    p = GetProcAddress(gl_lib, symbol.as_ptr() as *const u8);
+                if matches!(address, 0 | 1 | 2 | 3 | usize::MAX) {
+                    pointer = GetProcAddress(gl_library, symbol.as_ptr().cast());
                 }
 
-                p as *const _
+                pointer
             });
         }
 
+        let shader_profile = unsafe { Self::detect_shader_profile() }?;
+        let shaders = shader_sources(shader_profile);
+
+        println!("Selected shader profile: {shader_profile:?}");
+
+        let points_program = unsafe {
+            Self::create_program(shaders.points_vert, shaders.points_frag, shader_profile)
+        }
+        .map_err(|error| format!("Point shader initialization failed: {error}"))?;
+
+        let gizmos_program = match unsafe {
+            Self::create_program(shaders.gizmos_vert, shaders.gizmos_frag, shader_profile)
+        } {
+            Ok(program) => program,
+            Err(error) => {
+                unsafe { gl::DeleteProgram(points_program) };
+                return Err(format!("Gizmo shader initialization failed: {error}"));
+            }
+        };
+
+        self.shader_points = points_program;
+        self.shader_gizmos = gizmos_program;
+
         unsafe {
-            // shader 파일을 바이너리에 포함
-            const SHADER_POINTS_VERT: &str = include_str!("../shaders/desktop/points.vert");
-            const SHADER_POINTS_FRAG: &str = include_str!("../shaders/desktop/points.frag");
-
-            self.shader_points = Self::create_program(SHADER_POINTS_VERT, SHADER_POINTS_FRAG);
-
-            const SHADER_GIZMOS_VERT: &str = include_str!("../shaders/desktop/gizmos.vert");
-            const SHADER_GIZMOS_FRAG: &str = include_str!("../shaders/desktop/gizmos.frag");
-
-            self.shader_gizmos = Self::create_program(SHADER_GIZMOS_VERT, SHADER_GIZMOS_FRAG);
-
-            // VAO/VBO 초기화
             Self::setup_buffers_points(&mut self.vao_points, &mut self.vbo_points);
             Self::setup_buffers_color(&mut self.vao_lines, &mut self.vbo_lines);
             Self::setup_buffers_color(&mut self.vao_polys, &mut self.vbo_polys);
 
-            // vertex shader에서 gl_PointSize를 쓸 수 있게 활성화
-            gl::Enable(gl::PROGRAM_POINT_SIZE);
+            // GL_PROGRAM_POINT_SIZE는 Desktop OpenGL에서만 활성화.
+            // OpenGL ES에서는 별도 enable 없이 gl_PointSize가 적용됨.
+            if shader_profile == ShaderProfile::Gl330 {
+                gl::Enable(gl::PROGRAM_POINT_SIZE);
+            }
         }
 
         self.gl_loaded = true;
+        Ok(())
     }
 
     // FBO 관련 OpenGL 리소스 삭제
@@ -739,23 +1112,31 @@ impl Renderer {
             }
 
             self.gl_loaded = false;
+            self.gl_thread_id = None;
         }
     }
 
-    // camera 상태로 MVP matrix 계산
+    // camera 상태와 좌표계 보정을 반영한 MVP matrix 계산
     //
     // MVP = Projection * View * Model
     //
-    // Model      : object 자체 회전/이동
-    // View       : camera 위치와 방향
-    // Projection : 3D를 perspective 화면으로 투영
+    // Model:
+    // - 입력된 3D 좌표의 X축 방향 반전
+    // - roll 값에 따른 Z축 회전
+    //
+    // View:
+    // - camera 위치, 바라보는 방향, up 방향 반영
+    //
+    // Projection:
+    // - perspective 투영과 화면 종횡비 반영
+    //
+    // 최종 변환 순서 (오른쪽에서 왼쪽으로 적용):
+    // position -> X축 반전 -> Z축 roll 회전 -> camera view 변환 -> perspective projection
     fn calculate_mvp(&self) -> [f32; 16] {
-        // yaw/pitch/radius를 이용해 camera eye 위치 계산
         let eye_x = self.target_x + self.radius * self.pitch.cos() * self.yaw.sin();
         let eye_y = self.target_y + self.radius * self.pitch.sin();
         let eye_z = self.target_z + self.radius * self.pitch.cos() * self.yaw.cos();
 
-        // camera up vector 계산
         let up_x = -self.pitch.sin() * self.yaw.sin();
         let up_y = self.pitch.cos();
         let up_z = -self.pitch.sin() * self.yaw.cos();
@@ -767,20 +1148,31 @@ impl Renderer {
         );
 
         let aspect = self.width as f32 / self.height.max(1) as f32;
+        let projection = perspective(45.0f32.to_radians(), aspect, 1.0, 10_000.0);
 
-        let proj = perspective(45.0f32.to_radians(), aspect, 1.0, 10_000.0);
+        // View와 Projection을 결합
+        let view_projection = multiply_matrices(projection, view);
 
-        let vp = multiply_matrices(proj, view);
-
-        // roll 회전만 model matrix에 반영
         let cos_z = self.roll.cos();
         let sin_z = self.roll.sin();
 
-        let model = [
+        // roll 값에 따른 Z축 회전 matrix
+        let rotation = [
             cos_z, sin_z, 0.0, 0.0, -sin_z, cos_z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
 
-        multiply_matrices(vp, model)
+        // 입력 좌표의 X축 방향을 반전하는 matrix
+        // (x, y, z) -> (-x, y, z)
+        let flip_x = [
+            -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+
+        // column vector 기준으로 오른쪽 matrix부터 연산 적용.
+        // model = rotation * flip_x
+        // 따라서: 1. X축 반전 -> 2. Z축 roll 회전 순서로 적용됨
+        let model = multiply_matrices(rotation, flip_x);
+
+        multiply_matrices(view_projection, model)
     }
 
     // 실제 draw 함수
@@ -789,8 +1181,48 @@ impl Renderer {
     // Windows에서는 render_to_buffer()가 FBO를 bind한 뒤 이 함수를 호출.
     // Linux에서는 Flutter texture/context 쪽에서 준비된 상태에서 호출하는 구조.
     pub fn render(&mut self) {
+        if let Err(error) = self.bind_gl_thread() {
+            eprintln!("OpenGL render thread validation failed: {error}");
+            return;
+        }
+
         unsafe {
-            self.ensure_gl_loaded();
+            #[cfg(target_os = "android")]
+            {
+                // nativeSetSurface()가 EGL 객체를 준비하기 전에 render_frame()이
+                // 호출될 수 있으므로, 준비되지 않은 경우에는 이번 frame을 건너뜀.
+                let (Some(egl), Some(display), Some(surface), Some(context)) = (
+                    self.egl.as_ref(),
+                    self.display,
+                    self.egl_surface,
+                    self.context,
+                ) else {
+                    return;
+                };
+
+                // EGL context는 thread에 연결되므로 실제 render_frame()이 실행되는
+                // 현재 thread에서 매번 current 상태를 보장해야 함.
+                if let Err(error) =
+                    egl.make_current(display, Some(surface), Some(surface), Some(context))
+                {
+                    eprintln!("eglMakeCurrent failed: {error:?}");
+                    return;
+                }
+            }
+
+            // Android에서는 반드시 EGL context를 current로 만든 뒤 OpenGL 함수를
+            // 로드하고 shader/VAO/VBO를 생성해야 함.
+            if let Err(error) = self.ensure_gl_loaded() {
+                eprintln!("OpenGL initialization failed: {error}");
+                return;
+            }
+
+            #[cfg(target_os = "android")]
+            {
+                // Android window surface의 기본 framebuffer에 렌더링.
+                gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+                gl::Viewport(0, 0, self.width as i32, self.height as i32);
+            }
 
             // pending data가 있으면 GPU VBO로 업로드
             let upload_data = |pending: &mut Option<Vec<f32>>,
@@ -857,7 +1289,19 @@ impl Renderer {
             gl::ClearColor(0.1, 0.1, 0.1, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
-            let mvp = self.calculate_mvp();
+            #[allow(unused_mut)]
+            let mut mvp = self.calculate_mvp();
+
+            // Android SurfaceTexture를 Flutter Texture로 표시할 때
+            // OpenGL 출력이 상하 반전되므로 clip-space Y만 반전
+            #[cfg(target_os = "android")]
+            {
+                // column-major matrix의 두 번째 row를 반전
+                mvp[1] = -mvp[1];
+                mvp[5] = -mvp[5];
+                mvp[9] = -mvp[9];
+                mvp[13] = -mvp[13];
+            }
 
             // ----------------------------------------------------------------
             // Grid / Axis / Polygon 렌더링
@@ -865,8 +1309,10 @@ impl Renderer {
             if self.line_count > 0 || self.poly_count > 0 {
                 gl::UseProgram(self.shader_gizmos);
 
-                let mvp_loc =
-                    gl::GetUniformLocation(self.shader_gizmos, b"uMVP\0".as_ptr() as *const i8);
+                let mvp_loc = gl::GetUniformLocation(
+                    self.shader_gizmos,
+                    b"uMVP\0".as_ptr() as *const gl::types::GLchar,
+                );
 
                 gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
 
@@ -893,26 +1339,34 @@ impl Renderer {
             if self.point_count > 0 {
                 gl::UseProgram(self.shader_points);
 
-                let mvp_loc =
-                    gl::GetUniformLocation(self.shader_points, b"uMVP\0".as_ptr() as *const i8);
+                let mvp_loc = gl::GetUniformLocation(
+                    self.shader_points,
+                    b"uMVP\0".as_ptr() as *const gl::types::GLchar,
+                );
 
                 let size_loc = gl::GetUniformLocation(
                     self.shader_points,
-                    b"uPointSize\0".as_ptr() as *const i8,
+                    b"uPointSize\0".as_ptr() as *const gl::types::GLchar,
                 );
 
-                let min_loc =
-                    gl::GetUniformLocation(self.shader_points, b"uMin\0".as_ptr() as *const i8);
+                let min_loc = gl::GetUniformLocation(
+                    self.shader_points,
+                    b"uMin\0".as_ptr() as *const gl::types::GLchar,
+                );
 
-                let max_loc =
-                    gl::GetUniformLocation(self.shader_points, b"uMax\0".as_ptr() as *const i8);
+                let max_loc = gl::GetUniformLocation(
+                    self.shader_points,
+                    b"uMax\0".as_ptr() as *const gl::types::GLchar,
+                );
 
-                let alpha_loc =
-                    gl::GetUniformLocation(self.shader_points, b"uAlpha\0".as_ptr() as *const i8);
+                let alpha_loc = gl::GetUniformLocation(
+                    self.shader_points,
+                    b"uAlpha\0".as_ptr() as *const gl::types::GLchar,
+                );
 
                 let mode_loc = gl::GetUniformLocation(
                     self.shader_points,
-                    b"uColorMode\0".as_ptr() as *const i8,
+                    b"uColorMode\0".as_ptr() as *const gl::types::GLchar,
                 );
 
                 // shader uniform 값 전달
@@ -927,6 +1381,15 @@ impl Renderer {
 
                 // point_count 개수만큼 GL_POINTS로 그리기
                 gl::DrawArrays(gl::POINTS, 0, self.point_count);
+            }
+
+            #[cfg(target_os = "android")]
+            if let (Some(egl), Some(display), Some(surface)) =
+                (&self.egl, &self.display, &self.egl_surface)
+            {
+                if let Err(error) = egl.swap_buffers(*display, *surface) {
+                    eprintln!("eglSwapBuffers failed: {error:?}");
+                }
             }
 
             // OpenGL 상태 정리
@@ -1217,33 +1680,21 @@ fn transform_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
 }
 
 // ============================================================================
-// FFI
+// FFI (Foreign Function Interface)
 // ============================================================================
 //
-// FFI = Foreign Function Interface
+// Dart에서 Rust 함수를 호출하기 위한 C ABI 인터페이스.
 //
-// Dart에서 Rust 함수를 직접 호출하려면,
-// Rust 함수가 C ABI 형태로 노출되어야 함.
+// [Thread Safety 주의사항]
+// Dart Isolate 특성상 여러 스레드에서 동시에 FFI를 호출할 수 있어
+// Renderer 자체는 Mutex로 감싸서 메모리 충돌(Data Race)을 방지함.
 //
-// 그래서 아래 함수들은 전부 이런 형태를 가짐:
-//
-// #[unsafe(no_mangle)]
-// pub extern "C" fn ...
-//
-// 의미:
-//
-// no_mangle:
-//   Rust compiler가 함수 이름을 이상하게 바꾸지 못하게 함.
-//   그래야 Dart에서 "create_renderer" 같은 이름으로 lookup 가능.
-//
-// extern "C":
-//   C ABI 호출 규칙을 사용.
-//   Dart FFI, C/C++, Rust 사이에서 함수 호출 규칙을 맞추기 위함.
-//
-// *mut c_void:
-//   Dart 쪽에서는 Rust의 Renderer 타입을 모름.
-//   그래서 그냥 void pointer처럼 주소만 주고받음.
-//   내부에서는 다시 Renderer pointer로 캐스팅해서 사용.
+// 하지만, OpenGL Context는 OS 스레드(Thread Local)에 강하게 종속됨.
+// 즉, Mutex 락을 얻었더라도 GL context가 생성된 스레드와 현재 호출된 스레드가 다르면
+// OpenGL 함수 호출 시 크래시가 나거나 무시됨.
+// 따라서 UI 렌더링을 담당하는 메인/렌더 스레드 하나에서만 GL 관련 FFI를 호출해야 함.
+
+type RendererHandle = Mutex<Renderer>;
 
 // Renderer 생성
 //
@@ -1256,7 +1707,7 @@ fn transform_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
 // set_points / update_camera / render_to_buffer 등에 다시 넘김.
 #[unsafe(no_mangle)]
 pub extern "C" fn create_renderer() -> *mut c_void {
-    Box::into_raw(Box::new(Renderer::new())) as *mut c_void
+    Box::into_raw(Box::new(Mutex::new(Renderer::new()))).cast()
 }
 
 // Renderer 제거
@@ -1273,17 +1724,100 @@ pub extern "C" fn destroy_renderer(r: *mut c_void) {
         return;
     }
 
-    #[cfg(target_os = "windows")]
-    wgl_helper::make_current();
-
     // raw pointer를 다시 Box로 되돌림.
-    // 이 함수가 끝나면 Box가 drop되면서 Renderer 메모리도 해제됨.
-    let mut renderer = unsafe { Box::from_raw(r as *mut Renderer) };
+    // 호출자는 destroy와 다른 FFI 호출이 동시에 실행되지 않도록 보장해야 함.
+    let handle = unsafe { Box::from_raw(r.cast::<RendererHandle>()) };
+    let mut renderer = match handle.into_inner() {
+        Ok(renderer) => renderer,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let current_thread = std::thread::current().id();
+    let is_gl_thread = match renderer.gl_thread_id.as_ref() {
+        Some(owner) => owner == &current_thread,
+        None => true,
+    };
+    let mut can_delete_gl = is_gl_thread;
 
-    // shader, VAO, VBO, FBO 같은 GPU 리소스 정리
-    if renderer.gl_loaded {
-        unsafe {
-            renderer.delete_gl_resources();
+    #[cfg(target_os = "windows")]
+    {
+        if is_gl_thread {
+            if let Err(error) = wgl_helper::make_current() {
+                eprintln!("Failed to activate WGL context during destroy: {error}");
+                can_delete_gl = false;
+            }
+        } else {
+            eprintln!(
+                "destroy_renderer was called from a different thread; Windows GL resource deletion is skipped"
+            );
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        if is_gl_thread {
+            if let (Some(egl), Some(display), Some(surface), Some(context)) = (
+                renderer.egl.as_ref(),
+                renderer.display,
+                renderer.egl_surface,
+                renderer.context,
+            ) {
+                if let Err(error) =
+                    egl.make_current(display, Some(surface), Some(surface), Some(context))
+                {
+                    eprintln!("Failed to activate EGL context during destroy: {error:?}");
+                    can_delete_gl = false;
+                }
+            }
+        } else {
+            eprintln!(
+                "destroy_renderer was called from a different thread; Android GL resource deletion is skipped"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if renderer.gl_loaded && can_delete_gl {
+        let has_current_context = unsafe { !gl::GetString(gl::VERSION).is_null() };
+        if !has_current_context {
+            eprintln!(
+                "No current Linux OpenGL context during destroy; GL resource deletion is skipped"
+            );
+            can_delete_gl = false;
+        }
+    }
+
+    if renderer.gl_loaded && can_delete_gl {
+        unsafe { renderer.delete_gl_resources() };
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let surface = renderer.egl_surface.take();
+        let context = renderer.context.take();
+        let display = renderer.display.take();
+        let egl = renderer.egl.take();
+        renderer.config = None;
+
+        if let (Some(egl), Some(display)) = (egl, display) {
+            if let Err(error) = egl.make_current(display, None, None, None) {
+                eprintln!("Failed to clear current EGL context: {error:?}");
+            }
+
+            if let Some(surface) = surface {
+                if let Err(error) = egl.destroy_surface(display, surface) {
+                    eprintln!("Failed to destroy EGL surface: {error:?}");
+                }
+            }
+
+            if let Some(context) = context {
+                if let Err(error) = egl.destroy_context(display, context) {
+                    eprintln!("Failed to destroy EGL context: {error:?}");
+                }
+            }
+
+            if let Err(error) = egl.terminate(display) {
+                eprintln!("Failed to terminate EGL display: {error:?}");
+            }
         }
     }
 }
@@ -1297,9 +1831,15 @@ pub extern "C" fn destroy_renderer(r: *mut c_void) {
 // Windows는 render_to_buffer를 넘기던 구조와 맞음.
 #[unsafe(no_mangle)]
 pub extern "C" fn render_frame(r: *mut c_void) {
-    if !r.is_null() {
-        unsafe { &mut *(r as *mut Renderer) }.render();
+    if r.is_null() {
+        return;
     }
+
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut renderer = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    renderer.render();
 }
 
 // point cloud 데이터 설정
@@ -1316,13 +1856,20 @@ pub extern "C" fn render_frame(r: *mut c_void) {
 // 이유:
 // - FFI 호출 thread와 OpenGL context thread가 다를 수 있음
 // - OpenGL 작업은 render 시점에 몰아서 처리하는 쪽이 안정적
+// 성능 주의:
+// 현재는 안전을 위해 Dart 측 메모리를 Rust Vec으로 깊은 복사(Deep Copy)함.
+// 수백만 개의 Point(수십~수백 MB)를 매 프레임 업데이트할 경우 메모리 병목이 발생할 수 있음.
+// 향후 실시간 스트리밍이 필요하다면 Dart와 Rust가 메모리 버퍼를 공유(Zero-copy)하는 구조로 개선 필요.
 #[unsafe(no_mangle)]
 pub extern "C" fn set_points(r: *mut c_void, d: *const f32, l: usize) {
     if r.is_null() {
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if l == 0 || d.is_null() {
         re.pending_points = Some(Vec::new());
@@ -1344,7 +1891,10 @@ pub extern "C" fn set_lines(r: *mut c_void, d: *const f32, l: usize) {
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if l == 0 || d.is_null() {
         re.pending_lines = Some(Vec::new());
@@ -1366,7 +1916,10 @@ pub extern "C" fn set_polygons(r: *mut c_void, d: *const f32, l: usize) {
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if l == 0 || d.is_null() {
         re.pending_polys = Some(Vec::new());
@@ -1389,7 +1942,10 @@ pub extern "C" fn update_camera(r: *mut c_void, y: f32, p: f32, roll: f32, rad: 
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     re.yaw = y;
     re.pitch = p;
@@ -1409,7 +1965,10 @@ pub extern "C" fn resize_renderer(r: *mut c_void, w: u32, h: u32) {
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     re.resize(w, h);
 }
@@ -1430,7 +1989,10 @@ pub extern "C" fn pan_camera(r: *mut c_void, dx: f32, dy: f32) {
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // 현재 yaw 기준 오른쪽 방향
     let right_x = re.yaw.cos();
@@ -1471,7 +2033,10 @@ pub extern "C" fn set_point_cloud_display_params(
         return;
     }
 
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     re.alpha = alpha.clamp(0.0, 1.0);
     re.point_size = size;
@@ -1510,7 +2075,10 @@ pub extern "C" fn project_3d_to_screen_batch(
         return;
     }
 
-    let re = unsafe { &*(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // 현재 camera 상태 기준 MVP 계산
     let mvp = re.calculate_mvp();
@@ -1594,7 +2162,10 @@ pub extern "C" fn screen_to_world_on_plane(
         return 0;
     }
 
-    let renderer = unsafe { &*(r as *mut Renderer) };
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let renderer = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // project_3d_to_screen_batch() 및 실제 rendering에서 사용하는 것과
     // 동일한 MVP matrix를 사용해야 화면과 좌표가 정확하게 일치함.
@@ -1716,12 +2287,23 @@ pub extern "C" fn render_to_buffer(r: *mut c_void, buffer: *mut u8, w: u32, h: u
         return;
     }
 
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Err(error) = re.bind_gl_thread() {
+        eprintln!("OpenGL render thread validation failed: {error}");
+        return;
+    }
+
     // 현재 thread에 OpenGL context 연결
     //
     // 이게 없으면 아래 gl::* 호출들이 제대로 동작하지 않음.
-    wgl_helper::make_current();
-
-    let re = unsafe { &mut *(r as *mut Renderer) };
+    if let Err(error) = wgl_helper::make_current() {
+        eprintln!("Failed to activate WGL context: {error}");
+        return;
+    }
 
     // renderer 내부 width/height 갱신
     //
@@ -1732,7 +2314,10 @@ pub extern "C" fn render_to_buffer(r: *mut c_void, buffer: *mut u8, w: u32, h: u
         // OpenGL function loading, shader compile, VAO/VBO 생성
         //
         // 최초 1회만 수행.
-        re.ensure_gl_loaded();
+        if let Err(error) = re.ensure_gl_loaded() {
+            eprintln!("OpenGL initialization failed: {error}");
+            return;
+        }
 
         // offscreen FBO 준비
         //
@@ -1802,5 +2387,183 @@ pub extern "C" fn render_to_buffer(r: *mut c_void, buffer: *mut u8, w: u32, h: u
         //
         // 이후 다른 OpenGL 코드가 있다면 영향을 줄일 수 있음.
         gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+    }
+}
+
+// Android Window Surface 갱신 (JNI)
+//
+// Android는 앱이 백그라운드로 내려가거나 화면이 회전할 때 기존 Surface를 파괴하고,
+// 다시 복귀할 때 새로운 Surface를 생성함.
+//
+// 동작 방식:
+// - surface가 null로 넘어옴: 앱이 백그라운드로 감 -> 현재 EGL Surface 파괴 (GL Context는 유지)
+// - 새로운 surface가 넘어옴: 앱 복귀 또는 초기화 -> 기존 Surface 파괴 후 새 Surface 생성 및 연결
+//
+// 주의:
+// EGL Display, Config, Context는 앱이 살아있는 동안 Renderer당 한 번만 생성하여 재사용함.
+// Surface만 교체하는 방식이므로, 기존에 VBO/텍스처에 올려둔 GPU 자원은 그대로 유지됨.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_io_github_immsong_point_1glass_1opengl_PointGlassOpenglPlugin_nativeSetSurface(
+    env: jni::JNIEnv,
+    _this: jni::objects::JObject,
+    renderer_ptr: jni::sys::jlong,
+    surface: jni::objects::JObject,
+) {
+    use ndk::native_window::NativeWindow;
+
+    if renderer_ptr == 0 {
+        return;
+    }
+
+    unsafe {
+        let handle = &*(renderer_ptr as *const RendererHandle);
+        let mut renderer = handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // null Surface가 전달되면 현재 window surface만 해제
+        if surface.is_null() {
+            let display = renderer.display;
+            let old_surface = renderer.egl_surface.take();
+
+            if let (Some(egl), Some(display), Some(old_surface)) =
+                (renderer.egl.as_ref(), display, old_surface)
+            {
+                if let Err(error) = egl.destroy_surface(display, old_surface) {
+                    eprintln!("Failed to destroy EGL surface: {error:?}");
+                }
+            }
+            return;
+        }
+
+        let native_window =
+            match NativeWindow::from_surface(env.get_native_interface(), surface.into_raw()) {
+                Some(window) => window,
+                None => {
+                    eprintln!("Failed to get NativeWindow from Java Surface");
+                    return;
+                }
+            };
+
+        let window_ptr = native_window.ptr().as_ptr();
+
+        // display/config/context는 Renderer당 한 번 생성하고,
+        // Android Surface 변경 시 window surface만 교체
+        if renderer.egl.is_none() {
+            let egl = match khronos_egl::DynamicInstance::<khronos_egl::EGL1_4>::load_required() {
+                Ok(egl) => egl,
+                Err(error) => {
+                    eprintln!("Failed to load EGL: {error:?}");
+                    return;
+                }
+            };
+
+            let display = match egl.get_display(khronos_egl::DEFAULT_DISPLAY) {
+                Some(display) => display,
+                None => {
+                    eprintln!("Failed to get EGL display");
+                    return;
+                }
+            };
+
+            if let Err(error) = egl.initialize(display) {
+                eprintln!("Failed to initialize EGL: {error:?}");
+                return;
+            }
+
+            if let Err(error) = egl.bind_api(khronos_egl::OPENGL_ES_API) {
+                eprintln!("Failed to bind OpenGL ES API: {error:?}");
+                let _ = egl.terminate(display);
+                return;
+            }
+
+            let config_attributes = [
+                khronos_egl::SURFACE_TYPE,
+                khronos_egl::WINDOW_BIT,
+                khronos_egl::RENDERABLE_TYPE,
+                khronos_egl::OPENGL_ES3_BIT,
+                khronos_egl::RED_SIZE,
+                8,
+                khronos_egl::GREEN_SIZE,
+                8,
+                khronos_egl::BLUE_SIZE,
+                8,
+                khronos_egl::ALPHA_SIZE,
+                8,
+                khronos_egl::DEPTH_SIZE,
+                16,
+                khronos_egl::NONE,
+            ];
+
+            let config = match egl.choose_first_config(display, &config_attributes) {
+                Ok(Some(config)) => config,
+                Ok(None) => {
+                    eprintln!("No OpenGL ES 3 compatible EGL config found");
+                    let _ = egl.terminate(display);
+                    return;
+                }
+                Err(error) => {
+                    eprintln!("Failed to choose EGL config: {error:?}");
+                    let _ = egl.terminate(display);
+                    return;
+                }
+            };
+
+            let context_attributes = [khronos_egl::CONTEXT_CLIENT_VERSION, 3, khronos_egl::NONE];
+
+            let context = match egl.create_context(display, config, None, &context_attributes) {
+                Ok(context) => context,
+                Err(error) => {
+                    eprintln!("Failed to create OpenGL ES 3 context: {error:?}");
+                    let _ = egl.terminate(display);
+                    return;
+                }
+            };
+
+            renderer.egl = Some(egl);
+            renderer.display = Some(display);
+            renderer.context = Some(context);
+            renderer.config = Some(config);
+        }
+
+        let Some(display) = renderer.display else {
+            return;
+        };
+        let Some(config) = renderer.config else {
+            return;
+        };
+        let old_surface = renderer.egl_surface.take();
+
+        let egl_surface = {
+            let Some(egl) = renderer.egl.as_ref() else {
+                return;
+            };
+
+            // 기존 surface를 덮어쓰기 전에 EGL에 정리 요청.
+            // 다른 thread에서 current 상태라면 EGL이 current 해제 후 실제 제거함.
+            if let Some(old_surface) = old_surface {
+                if let Err(error) = egl.destroy_surface(display, old_surface) {
+                    eprintln!("Failed to destroy previous EGL surface: {error:?}");
+                }
+            }
+
+            match egl.create_window_surface(
+                display,
+                config,
+                window_ptr as khronos_egl::NativeWindowType,
+                None,
+            ) {
+                Ok(surface) => surface,
+                Err(error) => {
+                    eprintln!("Failed to create EGL window surface: {error:?}");
+                    return;
+                }
+            }
+        };
+
+        // make_current는 실제 render_frame이 호출되는 render thread에서 수행하도록 함.
+        renderer.egl_surface = Some(egl_surface);
     }
 }

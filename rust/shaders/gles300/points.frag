@@ -17,14 +17,7 @@
 // ============================================================================
 //
 // OpenGL ES shader에서는 float 정밀도를 명시해야 함.
-//
-// mediump:
-// - 모바일/임베디드 GPU에서 성능과 품질의 균형이 좋음
-// - 색상 계산 정도에는 대부분 충분
-//
-// desktop OpenGL용 #version 330 core shader로 분리할 경우
-// precision mediump float; 는 제거하는 쪽이 안전함.
-precision mediump float;
+precision highp float;
 
 // ============================================================================
 // [INPUT] Vertex Shader에서 넘어온 값
