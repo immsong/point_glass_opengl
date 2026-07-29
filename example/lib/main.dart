@@ -67,13 +67,15 @@ class _PointGlassExampleState extends State<PointGlassExample> {
   void initState() {
     super.initState();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadScene();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _glController.initialize();
 
       _sceneTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
         if (!mounted) return;
         _loadScene();
       });
+
+      _loadScene();
     });
   }
 
