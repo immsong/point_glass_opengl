@@ -52,6 +52,10 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
 
   List<PointGlassOpenGLLabel> _cachedLabels = [];
 
+  // pinch gesture를 위한 이전 스케일 값
+  double _previousTouchScale = 1.0;
+  bool _isPinching = false;
+
   @override
   void initState() {
     super.initState();
@@ -277,7 +281,7 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
 
     final coordinateText = worldPosition == null
         ? ''
-        : 'X: ${(-worldPosition.x).toStringAsFixed(2)} m\n'
+        : 'X: ${(worldPosition.x).toStringAsFixed(2)} m\n'
             'Y: ${worldPosition.y.toStringAsFixed(2)} m';
 
     return Positioned(
@@ -321,78 +325,121 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
           constraints.maxHeight,
         );
 
-        return MouseRegion(
-          onHover: (PointerHoverEvent event) {
-            _updateMousePosition(
-              event.localPosition,
-              viewerSize,
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onScaleStart: (ScaleStartDetails details) {
+            _previousTouchScale = 1.0;
+          },
+          onScaleUpdate: (ScaleUpdateDetails details) {
+            // 두 손가락 이상일 때만 pinch zoom 처리
+            if (details.pointerCount != 2) {
+              return;
+            }
+
+            _isPinching = true;
+            // details.scale:
+            // 손가락을 벌리면 1보다 커짐
+            // 손가락을 모으면 1보다 작아짐
+            //
+            // 현재 changeCameraZoom은 1보다 작으면 확대,
+            // 1보다 크면 축소하는 구조이므로 역비율 사용
+            final scaleFactor = _previousTouchScale / details.scale;
+
+            _previousTouchScale = details.scale;
+
+            _controller.changeCameraZoom(
+              scaleFactor.clamp(0.8, 1.2),
             );
           },
-          onExit: (_) {
-            _clearMousePosition();
+          onScaleEnd: (_) {
+            _previousTouchScale = 1.0;
+            _isPinching = false;
           },
-          child: Listener(
-            behavior: HitTestBehavior.opaque,
-            onPointerSignal: (
-              PointerSignalEvent event,
-            ) {
-              if (event is PointerScrollEvent) {
-                final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 0.9;
-
-                _controller.changeCameraZoom(
-                  scaleFactor,
-                );
+          child: MouseRegion(
+            onHover: (PointerHoverEvent event) {
+              if (_isPinching) {
+                return;
               }
-            },
-            onPointerMove: (
-              PointerMoveEvent event,
-            ) {
-              // 드래그 중에는 MouseRegion.onHover가
-              // 호출되지 않을 수 있으므로 여기서도 갱신
+
               _updateMousePosition(
                 event.localPosition,
                 viewerSize,
               );
-
-              if (_isShiftPressed) {
-                _controller.panCamera(
-                  -event.delta.dx,
-                  event.delta.dy,
-                );
-              } else if (_isCtrlPressed) {
-                _controller.rollCamera(
-                  -event.delta.dx,
-                );
-              } else if (event.buttons == kPrimaryMouseButton) {
-                _controller.changeCameraAngle(
-                  -event.delta.dx,
-                  event.delta.dy,
-                );
-              }
             },
-            child: Stack(
-              clipBehavior: Clip.hardEdge,
-              children: [
-                Positioned.fill(
-                  child: PointGlassOpenGLRawView(
-                    controller: _controller,
-                    onInitialized: _updateData,
-                  ),
-                ),
-                if (_cachedLabels.isNotEmpty)
+            onExit: (_) {
+              _clearMousePosition();
+            },
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerSignal: (
+                PointerSignalEvent event,
+              ) {
+                if (_isPinching) {
+                  return;
+                }
+
+                if (event is PointerScrollEvent) {
+                  final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 0.9;
+
+                  _controller.changeCameraZoom(
+                    scaleFactor,
+                  );
+                }
+              },
+              onPointerMove: (
+                PointerMoveEvent event,
+              ) {
+                if (_isPinching) {
+                  return;
+                }
+
+                // 드래그 중에는 MouseRegion.onHover가
+                // 호출되지 않을 수 있으므로 여기서도 갱신
+                _updateMousePosition(
+                  event.localPosition,
+                  viewerSize,
+                );
+
+                if (_isShiftPressed) {
+                  _controller.panCamera(
+                    -event.delta.dx,
+                    event.delta.dy,
+                  );
+                } else if (_isCtrlPressed) {
+                  _controller.rollCamera(
+                    -event.delta.dx,
+                  );
+                } else if (event.buttons == kPrimaryMouseButton) {
+                  _controller.changeCameraAngle(
+                    -event.delta.dx,
+                    event.delta.dy,
+                  );
+                }
+              },
+              child: Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
                   Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(
-                        painter: _BatchLabelPainter(
-                          controller: _controller,
-                          labels: _cachedLabels,
+                    child: PointGlassOpenGLRawView(
+                      controller: _controller,
+                      onInitialized: _updateData,
+                    ),
+                  ),
+                  if (_cachedLabels.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: _BatchLabelPainter(
+                            controller: _controller,
+                            labels: _cachedLabels,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                if (widget.enableMouseCoordinate && _mousePosition != null)
-                  _buildMousePositionOverlay(viewerSize),
-              ],
+                  if (widget.enableMouseCoordinate && _mousePosition != null)
+                    _buildMousePositionOverlay(viewerSize),
+                ],
+              ),
             ),
           ),
         );
