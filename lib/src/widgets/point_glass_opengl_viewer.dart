@@ -153,6 +153,8 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
     } else {
       _controller.setPolygons(Float32List(0));
     }
+
+    _controller.render();
   }
 
   void _updateLabels() {

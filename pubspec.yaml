@@ -42,6 +42,9 @@ flutter:
   # Please refer to README.md for a detailed explanation.
   plugin:
     platforms:
+      android:
+        package: io.github.immsong.point_glass_opengl
+        pluginClass: PointGlassOpenglPlugin
       linux:
         pluginClass: PointGlassOpenglPlugin
       windows:

@@ -1,0 +1,19 @@
+# 1. Flutter 빌드 및 캐시 파일 (43MB dill 파일 차단!)
+build/
+.dart_tool/
+*.dill
+
+# 2. 예제 앱의 빌드 찌꺼기
+example/build/
+example/.dart_tool/
+
+# 3. Rust 임시 빌드 산출물 (소스코드만 올라가면 됨)
+rust/target/
+rust/Cargo.lock
+
+# 4. OS별 불필요한 캐시 파일
+.DS_Store
+Thumbs.db
+
+# 5. VSCode 개인별 설정 파일
+.vscode
