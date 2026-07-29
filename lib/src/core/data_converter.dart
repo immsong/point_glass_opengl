@@ -57,8 +57,8 @@ class DataConverter {
 
     final List<double> result = [];
 
-    // gridSize가 20, gridStep이 1이면 count는 20칸.
-    // 절반(half)은 10이 되어, -10부터 +10까지 선을 긋습니다.
+    // gridSize가 20, gridStep이 1이면 count는 20칸이고,
+    // 절반은 10이 되어, -10부터 +10까지 선을 생성.
     final int count = (grid.gridSize / grid.gridStep).round();
     final double half = grid.gridSize / 2.0;
 
