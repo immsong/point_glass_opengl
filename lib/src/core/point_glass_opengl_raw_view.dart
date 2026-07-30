@@ -38,8 +38,21 @@ class _PointGlassOpenGLRawViewState extends State<PointGlassOpenGLRawView> {
         if (!_initStarted) {
           _initStarted = true;
           widget.controller.initialize(width: w, height: h).then((_) {
-            if (mounted) setState(() => _isInitialized = true);
-            widget.controller.render();
+            if (!mounted) {
+              return;
+            }
+
+            // initialize에 사용한 크기 기록
+            _lastWidth = w;
+            _lastHeight = h;
+
+            // 초기화 완료 후 viewport/projection 동기화
+            widget.controller.resize(w, h);
+
+            setState(() {
+              _isInitialized = true;
+            });
+
             widget.onInitialized?.call();
           });
         }
@@ -53,6 +66,7 @@ class _PointGlassOpenGLRawViewState extends State<PointGlassOpenGLRawView> {
             if (mounted) widget.controller.resize(w, h);
           });
         }
+
         _lastWidth = w;
         _lastHeight = h;
 
