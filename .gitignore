@@ -35,3 +35,6 @@ migrate_working_dir/
 # 빌드 결과물
 *.so
 *.dll
+
+# 개인 설정 파일
+.vscode/*

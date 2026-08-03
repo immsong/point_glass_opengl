@@ -94,7 +94,6 @@ class DataConverter {
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 꼭짓점 3
       ]);
     }
-    ;
 
     final List<double> result = [];
 
