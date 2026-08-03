@@ -13,6 +13,9 @@ import 'package:point_glass_opengl/src/models/point_glass_opengl_points.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_grid.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_label.dart';
 import 'package:point_glass_opengl/src/models/point_glass_opengl_axis.dart';
+import 'package:point_glass_opengl/src/widgets/point_glass_opengl_mouse_coordinate_overlay.dart';
+import 'package:point_glass_opengl/src/widgets/point_glass_opengl_label_painter.dart';
+import 'package:point_glass_opengl/src/widgets/point_glass_opengl_dual_joystick.dart';
 
 /// 마우스/키보드 카메라 제어가 내장된 OpenGL 뷰어
 class PointGlassOpenGLViewer extends StatefulWidget {
@@ -26,6 +29,9 @@ class PointGlassOpenGLViewer extends StatefulWidget {
   /// 마우스가 가리키는 Z 평면의 3D 좌표 표시 여부
   final bool enableMouseCoordinate;
 
+  /// 조이스틱 모드 사용 여부
+  final bool enableJoystick;
+
   const PointGlassOpenGLViewer({
     super.key,
     this.pointsGroup,
@@ -34,6 +40,7 @@ class PointGlassOpenGLViewer extends StatefulWidget {
     this.axis,
     this.controller,
     this.enableMouseCoordinate = true,
+    this.enableJoystick = true,
   });
 
   @override
@@ -65,6 +72,30 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
 
     _updateLabels();
+  }
+
+  @override
+  void didUpdateWidget(
+    covariant PointGlassOpenGLViewer oldWidget,
+  ) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.enableMouseCoordinate && !widget.enableMouseCoordinate) {
+      _mousePosition = null;
+      _mouseWorldPosition = null;
+    }
+
+    if (widget.pointsGroup != oldWidget.pointsGroup ||
+        widget.grid != oldWidget.grid ||
+        widget.axis != oldWidget.axis) {
+      _updateData();
+    }
+
+    if (widget.grid != oldWidget.grid ||
+        widget.labels != oldWidget.labels ||
+        widget.axis != oldWidget.axis) {
+      _updateLabels();
+    }
   }
 
   @override
@@ -214,100 +245,104 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
     _cachedLabels = newLabels;
   }
 
-  @override
-  void didUpdateWidget(
-    covariant PointGlassOpenGLViewer oldWidget,
-  ) {
-    super.didUpdateWidget(oldWidget);
+  Widget _buildViewerInteractionLayer(Size viewerSize, Widget viewer) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onScaleStart: (ScaleStartDetails details) {
+        _previousTouchScale = 1.0;
+      },
+      onScaleUpdate: (ScaleUpdateDetails details) {
+        // 두 손가락일 때만 pinch zoom 처리
+        if (details.pointerCount != 2) {
+          return;
+        }
 
-    if (oldWidget.enableMouseCoordinate && !widget.enableMouseCoordinate) {
-      _mousePosition = null;
-      _mouseWorldPosition = null;
-    }
+        _isPinching = true;
 
-    if (widget.pointsGroup != oldWidget.pointsGroup ||
-        widget.grid != oldWidget.grid ||
-        widget.axis != oldWidget.axis) {
-      _updateData();
-    }
+        // details.scale:
+        // 손가락을 벌리면 1보다 커짐
+        // 손가락을 모으면 1보다 작아짐
+        //
+        // 현재 changeCameraZoom은 1보다 작으면 확대,
+        // 1보다 크면 축소하는 구조이므로 역비율 사용
+        final scaleFactor = _previousTouchScale / details.scale;
 
-    if (widget.grid != oldWidget.grid ||
-        widget.labels != oldWidget.labels ||
-        widget.axis != oldWidget.axis) {
-      _updateLabels();
-    }
-  }
+        _previousTouchScale = details.scale;
 
-  Widget _buildMousePositionOverlay(
-    Size viewerSize,
-  ) {
-    final screenPosition = _mousePosition!;
-    final worldPosition = _mouseWorldPosition;
+        _controller.changeCameraZoom(
+          scaleFactor.clamp(0.8, 1.2),
+        );
+      },
+      onScaleEnd: (_) {
+        _previousTouchScale = 1.0;
+        _isPinching = false;
+      },
+      child: MouseRegion(
+        onHover: (PointerHoverEvent event) {
+          if (_isPinching) {
+            return;
+          }
 
-    const double margin = 12.0;
-    const double overlayWidth = 100.0;
-    const double overlayHeight = 50.0;
+          _updateMousePosition(
+            event.localPosition,
+            viewerSize,
+          );
+        },
+        onExit: (_) {
+          _clearMousePosition();
+        },
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerSignal: (
+            PointerSignalEvent event,
+          ) {
+            if (_isPinching) {
+              return;
+            }
 
-    double left = screenPosition.dx + margin;
-    double top = screenPosition.dy + margin;
+            if (event is PointerScrollEvent) {
+              final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 0.9;
 
-    if (left + overlayWidth > viewerSize.width) {
-      left = screenPosition.dx - overlayWidth - margin;
-    }
+              _controller.changeCameraZoom(
+                scaleFactor,
+              );
+            }
+          },
+          onPointerMove: (
+            PointerMoveEvent event,
+          ) {
+            if (_isPinching) {
+              return;
+            }
 
-    if (top + overlayHeight > viewerSize.height) {
-      top = screenPosition.dy - overlayHeight - margin;
-    }
+            // 드래그 중에는 MouseRegion.onHover가
+            // 호출되지 않을 수 있으므로 여기서도 갱신
+            _updateMousePosition(
+              event.localPosition,
+              viewerSize,
+            );
 
-    left = left
-        .clamp(
-          0.0,
-          (viewerSize.width - overlayWidth).clamp(
-            0.0,
-            double.infinity,
-          ),
-        )
-        .toDouble();
+            if (widget.enableJoystick) {
+              return;
+            }
 
-    top = top
-        .clamp(
-          0.0,
-          (viewerSize.height - overlayHeight).clamp(
-            0.0,
-            double.infinity,
-          ),
-        )
-        .toDouble();
-
-    final coordinateText = worldPosition == null
-        ? ''
-        : 'X: ${(worldPosition.x).toStringAsFixed(2)} m\n'
-            'Y: ${worldPosition.y.toStringAsFixed(2)} m';
-
-    return Positioned(
-      left: left,
-      top: top,
-      width: overlayWidth,
-      child: IgnorePointer(
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 6,
-          ),
-          decoration: BoxDecoration(
-            color: Colors.black.withAlpha(100),
-            borderRadius: BorderRadius.all(Radius.circular(4)),
-            border: Border.all(
-              color: Colors.white.withAlpha(100),
-            ),
-          ),
-          child: Text(
-            coordinateText,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11,
-            ),
-          ),
+            if (_isShiftPressed) {
+              _controller.panCamera(
+                -event.delta.dx,
+                event.delta.dy,
+              );
+            } else if (_isCtrlPressed) {
+              _controller.rollCamera(
+                -event.delta.dx,
+              );
+            } else if (event.buttons == kPrimaryMouseButton) {
+              _controller.changeCameraAngle(
+                -event.delta.dx,
+                event.delta.dy,
+              );
+            }
+          },
+          child: viewer,
         ),
       ),
     );
@@ -325,207 +360,58 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
           constraints.maxHeight,
         );
 
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onScaleStart: (ScaleStartDetails details) {
-            _previousTouchScale = 1.0;
-          },
-          onScaleUpdate: (ScaleUpdateDetails details) {
-            // 두 손가락 이상일 때만 pinch zoom 처리
-            if (details.pointerCount != 2) {
-              return;
-            }
-
-            _isPinching = true;
-            // details.scale:
-            // 손가락을 벌리면 1보다 커짐
-            // 손가락을 모으면 1보다 작아짐
-            //
-            // 현재 changeCameraZoom은 1보다 작으면 확대,
-            // 1보다 크면 축소하는 구조이므로 역비율 사용
-            final scaleFactor = _previousTouchScale / details.scale;
-
-            _previousTouchScale = details.scale;
-
-            _controller.changeCameraZoom(
-              scaleFactor.clamp(0.8, 1.2),
-            );
-          },
-          onScaleEnd: (_) {
-            _previousTouchScale = 1.0;
-            _isPinching = false;
-          },
-          child: MouseRegion(
-            onHover: (PointerHoverEvent event) {
-              if (_isPinching) {
-                return;
-              }
-
-              _updateMousePosition(
-                event.localPosition,
+        return Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            Positioned.fill(
+              child: _buildViewerInteractionLayer(
                 viewerSize,
-              );
-            },
-            onExit: (_) {
-              _clearMousePosition();
-            },
-            child: Listener(
-              behavior: HitTestBehavior.opaque,
-              onPointerSignal: (
-                PointerSignalEvent event,
-              ) {
-                if (_isPinching) {
-                  return;
-                }
-
-                if (event is PointerScrollEvent) {
-                  final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 0.9;
-
-                  _controller.changeCameraZoom(
-                    scaleFactor,
-                  );
-                }
-              },
-              onPointerMove: (
-                PointerMoveEvent event,
-              ) {
-                if (_isPinching) {
-                  return;
-                }
-
-                // 드래그 중에는 MouseRegion.onHover가
-                // 호출되지 않을 수 있으므로 여기서도 갱신
-                _updateMousePosition(
-                  event.localPosition,
-                  viewerSize,
-                );
-
-                if (_isShiftPressed) {
-                  _controller.panCamera(
-                    -event.delta.dx,
-                    event.delta.dy,
-                  );
-                } else if (_isCtrlPressed) {
-                  _controller.rollCamera(
-                    -event.delta.dx,
-                  );
-                } else if (event.buttons == kPrimaryMouseButton) {
-                  _controller.changeCameraAngle(
-                    -event.delta.dx,
-                    event.delta.dy,
-                  );
-                }
-              },
-              child: Stack(
-                clipBehavior: Clip.hardEdge,
-                children: [
-                  Positioned.fill(
-                    child: PointGlassOpenGLRawView(
-                      controller: _controller,
-                      onInitialized: _updateData,
-                    ),
-                  ),
-                  if (_cachedLabels.isNotEmpty)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: CustomPaint(
-                          painter: _BatchLabelPainter(
-                            controller: _controller,
-                            labels: _cachedLabels,
-                          ),
-                        ),
-                      ),
-                    ),
-                  if (widget.enableMouseCoordinate && _mousePosition != null)
-                    _buildMousePositionOverlay(viewerSize),
-                ],
+                PointGlassOpenGLRawView(
+                  controller: _controller,
+                  onInitialized: _updateData,
+                ),
               ),
             ),
-          ),
+            if (_cachedLabels.isNotEmpty)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: PointGlassOpenGLLabelPainter(
+                      controller: _controller,
+                      labels: _cachedLabels,
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.enableMouseCoordinate && _mousePosition != null)
+              PointGlassOpenGLMouseCoordinateOverlay(
+                screenPosition: _mousePosition!,
+                worldPosition: _mouseWorldPosition,
+                viewerSize: viewerSize,
+              ),
+            if (widget.enableJoystick)
+              Positioned.fill(
+                child: PointGlassOpenGLDualJoystick(
+                  viewerSize: viewerSize,
+                  updateStepLeft: 4.0,
+                  onUpdateLeft: (Offset offset) {
+                    _controller.panCamera(
+                      offset.dx,
+                      offset.dy,
+                    );
+                  },
+                  updateStepRight: 4.0,
+                  onUpdateRight: (Offset offset) {
+                    _controller.changeCameraAngle(
+                      -offset.dx,
+                      -offset.dy,
+                    );
+                  },
+                ),
+              ),
+          ],
         );
       },
     );
-  }
-}
-
-class _BatchLabelPainter extends CustomPainter {
-  final PointGlassOpenGLController controller;
-  final List<PointGlassOpenGLLabel> labels;
-
-  _BatchLabelPainter({
-    required this.controller,
-    required this.labels,
-  }) : super(repaint: controller);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (labels.isEmpty) {
-      return;
-    }
-
-    // 3D 라벨 위치 추출
-    final List<vm.Vector3> positions3D =
-        labels.map((label) => label.position).toList();
-
-    // 3D 좌표를 NDC 좌표로 일괄 변환
-    final List<Offset?> offsetsNDC = controller.project3DToScreenBatch(
-      positions3D,
-    );
-
-    if (offsetsNDC.isEmpty || offsetsNDC.length != labels.length) {
-      return;
-    }
-
-    for (int i = 0; i < labels.length; i++) {
-      final ndc = offsetsNDC[i];
-
-      if (ndc == null) {
-        continue;
-      }
-
-      final screenX = (ndc.dx + 1.0) / 2.0 * size.width;
-
-      final screenY = (ndc.dy + 1.0) / 2.0 * size.height;
-
-      if (screenX < 0 ||
-          screenX > size.width ||
-          screenY < 0 ||
-          screenY > size.height) {
-        continue;
-      }
-
-      final label = labels[i];
-
-      final textSpan = TextSpan(
-        text: label.text,
-        style: label.style ??
-            const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-            ),
-      );
-
-      final textPainter = TextPainter(
-        text: textSpan,
-        textDirection: TextDirection.ltr,
-      );
-
-      textPainter.layout();
-
-      textPainter.paint(
-        canvas,
-        Offset(
-          screenX - textPainter.width / 2,
-          screenY - textPainter.height / 2,
-        ),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(
-    covariant _BatchLabelPainter oldDelegate,
-  ) {
-    return oldDelegate.labels != labels || oldDelegate.controller != controller;
   }
 }

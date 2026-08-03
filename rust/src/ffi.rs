@@ -304,14 +304,13 @@ pub extern "C" fn resize_renderer(r: *mut c_void, w: u32, h: u32) {
 
 // camera pan
 //
-// 화면을 드래그해서 target 위치를 이동시키는 함수.
+// target을 XY 평면에서 이동
 //
-// dx/dy는 보통 screen drag delta.
-// 이 값을 현재 camera 방향 기준의 right/up vector로 변환해서
-// target_x/y/z를 이동시킴.
+// dx: 좌우 이동
+// dy: 전진/후진
 //
-// 즉 물체를 움직이는 게 아니라,
-// camera가 바라보는 중심점을 이동시키는 방식.
+// camera yaw/pitch와 관계없이 항상 고정된 월드 좌표계를 기준으로 이동.
+// Z축 높이는 변경하지 않음.
 #[unsafe(no_mangle)]
 pub extern "C" fn pan_camera(r: *mut c_void, dx: f32, dy: f32) {
     if r.is_null() {
@@ -323,21 +322,13 @@ pub extern "C" fn pan_camera(r: *mut c_void, dx: f32, dy: f32) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    // 현재 yaw 기준 오른쪽 방향
-    let right_x = re.yaw.cos();
-    let right_z = -re.yaw.sin();
-
-    // 현재 yaw/pitch 기준 위쪽 방향
-    let up_x = -re.pitch.sin() * re.yaw.sin();
-    let up_y = re.pitch.cos();
-    let up_z = -re.pitch.sin() * re.yaw.cos();
-
-    // 멀리 있을수록 같은 drag도 더 크게 이동하게 보정
+    // 멀리 있을수록 같은 입력에서도 이동량을 크게 적용
     let scale = re.radius * 0.001;
 
-    re.target_x += (right_x * dx - up_x * dy) * scale;
-    re.target_y += (-up_y * dy) * scale;
-    re.target_z += (right_z * dx - up_z * dy) * scale;
+    // 좌우 이동
+    re.target_x -= dx * scale;
+    re.target_y += dy * scale;
+    // target_z는 변경하지 않음
 }
 
 // point cloud 표시 옵션 설정
