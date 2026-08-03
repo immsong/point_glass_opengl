@@ -1,6 +1,6 @@
 name: point_glass_opengl
-description: "A Flutter package for high-performance 3D point cloud visualization using native Rust and OpenGL rendering."
-version: 0.2.0
+description: "A Flutter package for high-performance 3D point cloud visualization using native Rust, OpenGL, and OpenGL ES rendering."
+version: 0.3.0
 homepage: https://github.com/immsong/point_glass_opengl
 repository: https://github.com/immsong/point_glass_opengl
 issue_tracker: https://github.com/immsong/point_glass_opengl/issues

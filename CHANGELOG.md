@@ -1,3 +1,15 @@
+## 0.3.0
+
+* Added Android platform support with OpenGL ES rendering.
+* Added pinch zoom gesture support for mobile viewers.
+* Added optional dual joystick controls for XY movement and camera rotation.
+* Added the `enableJoystick` option for controlling joystick visibility and interaction mode.
+* Added variable joystick input speed based on thumb movement distance.
+* Changed camera pan movement to use fixed world XY coordinates.
+* Improved OpenGL viewport initialization and resize handling.
+* Refactored Rust rendering modules and Flutter native bindings.
+* Improved Android surface rendering, shader selection, and coordinate handling.
+
 ## 0.2.0
 
 * Added optional mouse coordinate display to `PointGlassOpenGLViewer`.
