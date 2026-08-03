@@ -1,15 +1,16 @@
 # point_glass_opengl
 
-A Flutter package for high-performance 3D point cloud visualization using native Rust and OpenGL rendering.
+A Flutter package for high-performance 3D point cloud visualization using native Rust, OpenGL, and OpenGL ES rendering.
 
-`point_glass_opengl` provides a native offscreen rendering pipeline for visualizing point cloud data in Flutter desktop applications. It supports OpenGL-based rendering, interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, and real-time display parameter updates.
+`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, and real-time display parameter updates.
 
 ## Features
 
-* **Native 3D Rendering**: Rust-based OpenGL rendering core for high-performance 3D visualization.
+* **Native 3D Rendering**: Rust-based OpenGL and OpenGL ES rendering core for high-performance 3D visualization.
 * **Point Cloud Rendering**: FFI-based point cloud rendering pipeline with VBO support.
-* **Offscreen Rendering**: FBO- and `glReadPixels`-based rendering for Flutter texture integration.
+* **Cross-platform Support**: Native rendering support for Windows, Linux, and Android.
 * **3D Camera Controls**: Built-in orbit, pan, roll, and zoom controls.
+* **Joystick Controls**: Optional dual joystick controls for XY movement and camera rotation.
 * **Visualization Overlays**: Grid, axis, and 3D-to-2D label projection support.
 * **Mouse Coordinate Display**: Optional cursor overlay showing the corresponding X/Y position on the ground plane.
 * **Depth-based Color Mapping**: Real-time point cloud color mapping using a value range.
@@ -23,7 +24,7 @@ A Flutter package for high-performance 3D point cloud visualization using native
 | Windows  | Supported         |
 | Linux    | Supported         |
 | macOS    | Not supported yet |
-| Android  | Not supported yet |
+| Android  | Supported         |
 | iOS      | Not supported yet |
 | Web      | Not supported     |
 
@@ -33,7 +34,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  point_glass_opengl: ^0.2.0
+  point_glass_opengl: ^0.3.0
 ```
 
 Then run:
@@ -180,6 +181,23 @@ _controller.changeCameraZoom(scaleFactor);
 | Roll   | `rollCamera(deltaZ)`                |
 | Zoom   | `changeCameraZoom(scaleFactor)`     |
 
+## Joystick Controls
+
+`PointGlassOpenGLViewer` provides optional dual joystick controls.
+
+```dart
+PointGlassOpenGLViewer(
+  controller: _controller,
+  grid: PointGlassOpenGLGrid(),
+  axis: PointGlassOpenGLAxis(),
+  enableJoystick: true,
+);
+```
+
+The left joystick controls XY movement, and the right joystick controls camera rotation.
+
+Joystick controls are disabled by default.
+
 ## Mouse Coordinate Display
 
 `PointGlassOpenGLViewer` can display the X/Y coordinate corresponding to the current mouse position on the ground plane.
@@ -225,13 +243,12 @@ Flutter UI Layer
   - User input handling
   - Controller API
 
-C++ Plugin Layer
-  - Flutter texture integration
-  - Platform-specific native bridge
-  - Texture lifecycle management
+Platform Integration Layer
+  - Windows/Linux Flutter texture integration
+  - Android native surface integration
 
 Rust Core Layer
-  - OpenGL context control
+  - OpenGL and OpenGL ES rendering
   - Shader and buffer management
   - Point cloud VBO rendering
   - 3D math and projection
@@ -239,9 +256,10 @@ Rust Core Layer
 
 ## Notes
 
-* This package currently focuses on Windows and Linux desktop environments.
-* Web and mobile platforms are not supported in the current release.
+* Windows, Linux, and Android are currently supported.
+* macOS, iOS, and Web are not supported.
 * Mouse coordinates are displayed relative to the ground plane.
+* Dual joystick controls are disabled by default and can be enabled with `enableJoystick`.
 * Point cloud data must be provided as `Float32List`.
 * Point data uses 4 float values per point: `X`, `Y`, `Z`, and `Value`.
 * Line and polygon data use 8 float values per vertex: `X`, `Y`, `Z`, `R`, `G`, `B`, `A`, and `Size/Thickness`.
