@@ -64,6 +64,21 @@ typedef _ResizeRendererDart = void Function(
   int height,
 );
 
+typedef _SetClearColorC = Void Function(
+  Pointer<Void> renderer,
+  Float red,
+  Float green,
+  Float blue,
+  Float alpha,
+);
+typedef _SetClearColorDart = void Function(
+  Pointer<Void> renderer,
+  double red,
+  double green,
+  double blue,
+  double alpha,
+);
+
 typedef _PanCameraC = Void Function(
   Pointer<Void> renderer,
   Float dx,
@@ -137,6 +152,7 @@ class PointGlassOpenGLNativeBindings {
     required _SetDataDart setPolygons,
     required _UpdateCameraDart updateCamera,
     required _ResizeRendererDart resizeRenderer,
+    required _SetClearColorDart setClearColor,
     required _PanCameraDart panCamera,
     required _Project3DToScreenBatchDart project3DToScreenBatch,
     required _ScreenToWorldOnPlaneDart screenToWorldOnPlane,
@@ -149,6 +165,7 @@ class PointGlassOpenGLNativeBindings {
         _setPolygons = setPolygons,
         _updateCamera = updateCamera,
         _resizeRenderer = resizeRenderer,
+        _setClearColor = setClearColor,
         _panCamera = panCamera,
         _project3DToScreenBatch = project3DToScreenBatch,
         _screenToWorldOnPlane = screenToWorldOnPlane,
@@ -163,6 +180,7 @@ class PointGlassOpenGLNativeBindings {
 
   final _UpdateCameraDart _updateCamera;
   final _ResizeRendererDart _resizeRenderer;
+  final _SetClearColorDart _setClearColor;
   final _PanCameraDart _panCamera;
 
   final _Project3DToScreenBatchDart _project3DToScreenBatch;
@@ -195,6 +213,9 @@ class PointGlassOpenGLNativeBindings {
     final resizeRenderer = library
         .lookup<NativeFunction<_ResizeRendererC>>('resize_renderer')
         .asFunction<_ResizeRendererDart>();
+    final setClearColor = library
+        .lookup<NativeFunction<_SetClearColorC>>('set_clear_color')
+        .asFunction<_SetClearColorDart>();
     final panCamera = library
         .lookup<NativeFunction<_PanCameraC>>('pan_camera')
         .asFunction<_PanCameraDart>();
@@ -236,6 +257,7 @@ class PointGlassOpenGLNativeBindings {
       setPolygons: setPolygons,
       updateCamera: updateCamera,
       resizeRenderer: resizeRenderer,
+      setClearColor: setClearColor,
       panCamera: panCamera,
       project3DToScreenBatch: project3DToScreenBatch,
       screenToWorldOnPlane: screenToWorldOnPlane,
@@ -310,6 +332,16 @@ class PointGlassOpenGLNativeBindings {
     int height,
   ) {
     _resizeRenderer(renderer, width, height);
+  }
+
+  void setClearColor(
+    Pointer<Void> renderer,
+    double red,
+    double green,
+    double blue,
+    double alpha,
+  ) {
+    _setClearColor(renderer, red, green, blue, alpha);
   }
 
   void panCamera(

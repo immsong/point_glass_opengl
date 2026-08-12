@@ -89,17 +89,17 @@ out vec4 FragColor;
 // 높으면 빨간색 계열로 가도록 hue를 계산함.
 vec3 hsv2rgb(vec3 c) {
     // K는 HSV → RGB 변환에서 사용하는 상수 묶음.
-    vec4 K = vec4(1.0f, 2.0f / 3.0f, 1.0f / 3.0f, 3.0f);
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
 
     // fract:
     // 소수 부분만 가져옴.
     //
     // abs / clamp / mix 조합으로 조건문 없이 RGB 색상을 계산.
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0f - K.www);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
 
     // c.z = value, 밝기
     // c.y = saturation, 채도
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0f, 1.0f), c.y);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
 // ============================================================================
@@ -113,9 +113,9 @@ vec3 hsv2rgb(vec3 c) {
 vec3 turbo(float x) {
     // 색상 anchor point.
     // r/g/b 각각 6개 지점을 가지고 있음.
-    float r[6] = float[](0.18995f, 0.5f, 0.8f, 1.0f, 0.9f, 0.5f);
-    float g[6] = float[](0.07176f, 0.5f, 0.9f, 0.8f, 0.3f, 0.1f);
-    float b[6] = float[](0.23217f, 0.9f, 0.5f, 0.1f, 0.05f, 0.0f);
+    float r[6] = float[](0.18995, 0.5, 0.8, 1.0, 0.9, 0.5);
+    float g[6] = float[](0.07176, 0.5, 0.9, 0.8, 0.3, 0.1);
+    float b[6] = float[](0.23217, 0.9, 0.5, 0.1, 0.05, 0.0);
 
     // x를 0~5 구간으로 확장.
     //
@@ -123,14 +123,14 @@ vec3 turbo(float x) {
     // x = 0.0 → pos = 0.0
     // x = 0.5 → pos = 2.5
     // x = 1.0 → pos = 5.0
-    float pos = clamp(x, 0.0f, 1.0f) * 5.0f;
+    float pos = clamp(x, 0.0, 1.0) * 5.0;
 
     // 현재 pos가 어느 구간에 있는지 계산.
     //
     // idx는 최대 4까지만 허용.
     // 이유:
     // 아래에서 idx + 1을 접근하므로 idx가 5가 되면 배열 범위를 넘음.
-    int idx = int(min(floor(pos), 4.0f));
+    int idx = int(min(floor(pos), 4.0));
 
     // 현재 구간 내부에서의 보간 비율.
     //
@@ -157,16 +157,16 @@ vec3 turbo(float x) {
 //
 // 여기서는 간단한 5-point 보간 버전.
 vec3 viridis(float x) {
-    float r[5] = float[](0.267f, 0.231f, 0.129f, 0.369f, 0.992f);
-    float g[5] = float[](0.004f, 0.322f, 0.569f, 0.788f, 0.906f);
-    float b[5] = float[](0.329f, 0.545f, 0.553f, 0.384f, 0.145f);
+    float r[5] = float[](0.267, 0.231, 0.129, 0.369, 0.992);
+    float g[5] = float[](0.004, 0.322, 0.569, 0.788, 0.906);
+    float b[5] = float[](0.329, 0.545, 0.553, 0.384, 0.145);
 
     // 5개 anchor color → 4개 구간
-    float pos = clamp(x, 0.0f, 1.0f) * 4.0f;
+    float pos = clamp(x, 0.0, 1.0) * 4.0;
 
     // idx는 0~3만 사용.
     // idx + 1 접근 때문에 최대 3.
-    int idx = int(min(floor(pos), 3.0f));
+    int idx = int(min(floor(pos), 3.0));
 
     float t = pos - float(idx);
 
@@ -182,12 +182,12 @@ vec3 viridis(float x) {
 //
 // 기준값보다 낮음/높음이 중요한 데이터 표현에 유용.
 vec3 coolwarm(float x) {
-    float r[5] = float[](0.231f, 0.545f, 0.867f, 0.945f, 0.706f);
-    float g[5] = float[](0.298f, 0.631f, 0.867f, 0.580f, 0.016f);
-    float b[5] = float[](0.753f, 0.847f, 0.867f, 0.514f, 0.149f);
+    float r[5] = float[](0.231, 0.545, 0.867, 0.945, 0.706);
+    float g[5] = float[](0.298, 0.631, 0.867, 0.580, 0.016);
+    float b[5] = float[](0.753, 0.847, 0.867, 0.514, 0.149);
 
-    float pos = clamp(x, 0.0f, 1.0f) * 4.0f;
-    int idx = int(min(floor(pos), 3.0f));
+    float pos = clamp(x, 0.0, 1.0) * 4.0;
+    int idx = int(min(floor(pos), 3.0));
     float t = pos - float(idx);
 
     return vec3(mix(r[idx], r[idx + 1], t), mix(g[idx], g[idx + 1], t), mix(b[idx], b[idx + 1], t));
@@ -216,8 +216,10 @@ void main() {
     // uMax == uMin이면 0으로 나누게 됨.
     //
     // 그래서 range에 최소값을 둬서 방어.
-    float range = max(abs(uMax - uMin), 0.000001f);
-    float normalized = clamp((vValue - uMin) / range, 0.0f, 1.0f);
+    float range = max(abs(uMax - uMin), 0.000001);
+    float normalized = clamp((vValue - uMin) / range, 0.0, 1.0);
+
+    float displayValue = mix(0.20, 1.0, normalized);
 
     // 최종 RGB 값
     vec3 rgb;
@@ -229,28 +231,28 @@ void main() {
     // uColorMode 값에 따라 다른 색상 함수 사용.
     if(uColorMode == 1) {
         // Turbo
-        rgb = turbo(normalized);
+        rgb = turbo(displayValue);
     } else if(uColorMode == 2) {
         // Rainbow HSV
         //
         // hue 240도 = 파란색
         // hue   0도 = 빨간색
         //
-        // normalized가 낮으면 파랑,
-        // 높으면 빨강이 되도록 1.0 - normalized 사용.
-        float hue = (1.0f - normalized) * 240.0f / 360.0f;
-        rgb = hsv2rgb(vec3(hue, 1.0f, 1.0f));
+        // displayValue가 낮으면 파랑,
+        // 높으면 빨강이 되도록 1.0 - displayValue 사용.
+        float hue = (1.0 - displayValue) * 240.0 / 360.0;
+        rgb = hsv2rgb(vec3(hue, 1.0, 1.0));
     } else if(uColorMode == 3) {
         // Coolwarm
-        rgb = coolwarm(normalized);
+        rgb = coolwarm(displayValue);
     } else if(uColorMode == 4) {
         // Grayscale
         //
         // R, G, B가 같으면 회색.
-        rgb = vec3(normalized, normalized, normalized);
+        rgb = vec3(displayValue, displayValue, displayValue);
     } else {
         // 기본 컬러맵: Viridis
-        rgb = viridis(normalized);
+        rgb = viridis(displayValue);
     }
 
     // ------------------------------------------------------------------------

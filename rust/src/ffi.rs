@@ -302,6 +302,28 @@ pub extern "C" fn resize_renderer(r: *mut c_void, w: u32, h: u32) {
     re.resize(w, h);
 }
 
+// Renderer 배경색 설정
+//
+// OpenGL clear color를 설정.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_clear_color(r: *mut c_void, red: f32, green: f32, blue: f32, alpha: f32) {
+    if r.is_null() {
+        return;
+    }
+
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    re.clear_color = [
+        red.clamp(0.0, 1.0),
+        green.clamp(0.0, 1.0),
+        blue.clamp(0.0, 1.0),
+        alpha.clamp(0.0, 1.0),
+    ];
+}
+
 // camera pan
 //
 // target을 XY 평면에서 이동

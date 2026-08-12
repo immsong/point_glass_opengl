@@ -89,6 +89,9 @@ pub struct Renderer {
     pub(crate) target_y: f32,
     pub(crate) target_z: f32,
 
+    // OpenGL clear color background
+    pub(crate) clear_color: [f32; 4],
+
     // point cloud 표시 옵션
     pub(crate) alpha: f32,
     pub(crate) point_size: f32,
@@ -151,6 +154,7 @@ impl Renderer {
             target_y: 0.0,
             target_z: 0.0,
 
+            clear_color: [0.1, 0.1, 0.1, 1.0],
             alpha: 1.0,
             point_size: 3.0,
             value_min: -2.0,
@@ -645,7 +649,12 @@ impl Renderer {
             gl::ColorMask(gl::TRUE, gl::TRUE, gl::TRUE, gl::TRUE);
 
             // 배경색 + color/depth buffer 초기화
-            gl::ClearColor(0.1, 0.1, 0.1, 1.0);
+            gl::ClearColor(
+                self.clear_color[0],
+                self.clear_color[1],
+                self.clear_color[2],
+                self.clear_color[3],
+            );
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
             #[allow(unused_mut)]
