@@ -226,6 +226,8 @@ void main() {
     float range = max(abs(uMax - uMin), 0.000001f);
     float normalized = clamp((vValue - uMin) / range, 0.0f, 1.0f);
 
+    float displayValue = mix(0.20f, 1.0f, normalized);
+
     // 최종 RGB 값
     vec3 rgb;
 
@@ -236,28 +238,28 @@ void main() {
     // uColorMode 값에 따라 다른 색상 함수 사용.
     if(uColorMode == 1) {
         // Turbo
-        rgb = turbo(normalized);
+        rgb = turbo(displayValue);
     } else if(uColorMode == 2) {
         // Rainbow HSV
         //
         // hue 240도 = 파란색
         // hue   0도 = 빨간색
         //
-        // normalized가 낮으면 파랑,
-        // 높으면 빨강이 되도록 1.0 - normalized 사용.
-        float hue = (1.0f - normalized) * 240.0f / 360.0f;
+        // displayValue가 낮으면 파랑,
+        // 높으면 빨강이 되도록 1.0 - displayValue 사용.
+        float hue = (1.0f - displayValue) * 240.0f / 360.0f;
         rgb = hsv2rgb(vec3(hue, 1.0f, 1.0f));
     } else if(uColorMode == 3) {
         // Coolwarm
-        rgb = coolwarm(normalized);
+        rgb = coolwarm(displayValue);
     } else if(uColorMode == 4) {
         // Grayscale
         //
         // R, G, B가 같으면 회색.
-        rgb = vec3(normalized, normalized, normalized);
+        rgb = vec3(displayValue, displayValue, displayValue);
     } else {
         // 기본 컬러맵: Viridis
-        rgb = viridis(normalized);
+        rgb = viridis(displayValue);
     }
 
     // ------------------------------------------------------------------------
