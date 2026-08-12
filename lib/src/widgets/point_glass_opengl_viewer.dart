@@ -20,6 +20,7 @@ import 'package:point_glass_opengl/src/widgets/point_glass_opengl_dual_joystick.
 /// 마우스/키보드 카메라 제어가 내장된 OpenGL 뷰어
 class PointGlassOpenGLViewer extends StatefulWidget {
   final PointGlassOpenGLController? controller;
+  final Color bgColor;
 
   final List<PointGlassOpenGLPoints>? pointsGroup;
   final PointGlassOpenGLGrid? grid;
@@ -39,6 +40,7 @@ class PointGlassOpenGLViewer extends StatefulWidget {
     this.labels,
     this.axis,
     this.controller,
+    this.bgColor = const Color(0xFF1A1A1A),
     this.enableMouseCoordinate = true,
     this.enableJoystick = true,
   });
@@ -68,6 +70,7 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
     super.initState();
 
     _controller = widget.controller ?? PointGlassOpenGLController();
+    _controller.setBgColor(widget.bgColor);
 
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
 
@@ -83,6 +86,10 @@ class _PointGlassOpenGLViewerState extends State<PointGlassOpenGLViewer> {
     if (oldWidget.enableMouseCoordinate && !widget.enableMouseCoordinate) {
       _mousePosition = null;
       _mouseWorldPosition = null;
+    }
+
+    if (widget.bgColor != oldWidget.bgColor) {
+      _controller.setBgColor(widget.bgColor);
     }
 
     if (widget.pointsGroup != oldWidget.pointsGroup ||

@@ -36,6 +36,9 @@ class PointGlassOpenGLController with ChangeNotifier {
   // Flutter engine에서 발급한 texture ID
   int? textureId;
 
+  // OpenGL clear color 배경색
+  Color bgColor = const Color(0xFF1A1A1A);
+
   // 같은 Flutter frame 안의 여러 render 요청을 하나로 병합하기 위한 상태.
   // Native render가 진행 중일 때 발생한 추가 요청은 완료 후 다음 frame에 처리.
   bool _renderScheduled = false;
@@ -79,6 +82,13 @@ class PointGlassOpenGLController with ChangeNotifier {
       width,
       height,
     );
+    _bindings.setClearColor(
+      _rendererPtr!,
+      bgColor.r,
+      bgColor.g,
+      bgColor.b,
+      bgColor.a,
+    );
 
     // Native plugin에 Renderer 주소, render 함수 주소, texture 크기 전달
     textureId = await _channel.invokeMethod<int>('createTexture', {
@@ -87,6 +97,26 @@ class PointGlassOpenGLController with ChangeNotifier {
       'width': width,
       'height': height,
     });
+  }
+
+  /// OpenGL clear color 배경색을 변경.
+  ///
+  /// [color]는 RGBA로 지정.
+  void setBgColor(Color color) {
+    bgColor = color;
+
+    if (_rendererPtr == null) {
+      return;
+    }
+
+    _bindings.setClearColor(
+      _rendererPtr!,
+      color.r,
+      color.g,
+      color.b,
+      color.a,
+    );
+    render();
   }
 
   // ============================================================================
