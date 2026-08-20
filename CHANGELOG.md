@@ -1,3 +1,8 @@
+## 0.3.1
+
+* Added configurable OpenGL background color support with the `bgColor` option.
+* Improved visibility of low-value point cloud data by adjusting the display value range.
+
 ## 0.3.0
 
 * Added Android platform support with OpenGL ES rendering.
