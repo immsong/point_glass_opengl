@@ -2,7 +2,7 @@
 
 A Flutter package for high-performance 3D point cloud visualization using native Rust, OpenGL, and OpenGL ES rendering.
 
-`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, and real-time display parameter updates.
+`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, configurable background colors, and real-time display parameter updates.
 
 ## Features
 
@@ -14,7 +14,7 @@ A Flutter package for high-performance 3D point cloud visualization using native
 * **Visualization Overlays**: Grid, axis, and 3D-to-2D label projection support.
 * **Mouse Coordinate Display**: Optional cursor overlay showing the corresponding X/Y position on the ground plane.
 * **Depth-based Color Mapping**: Real-time point cloud color mapping using a value range.
-* **Display Controls**: Runtime control of point size, alpha, value range, and color mode.
+* **Display Controls**: Runtime control of point size, alpha, value range, color mode, and background color.
 * **Declarative Flutter API**: Flutter-friendly viewer models and external controller support.
 
 ## Platform Support
@@ -34,7 +34,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  point_glass_opengl: ^0.3.0
+  point_glass_opengl: ^0.3.1
 ```
 
 Then run:
@@ -80,6 +80,7 @@ class _PointGlassExampleState extends State<PointGlassExample> {
   Widget build(BuildContext context) {
     return PointGlassOpenGLViewer(
       controller: _controller,
+      bgColor: const Color(0xFF1A1A1A),
       grid: PointGlassOpenGLGrid(),
       axis: PointGlassOpenGLAxis(),
     );
@@ -129,6 +130,21 @@ _controller.setPointCloudDisplayParams(
   PointGlassOpenGLPointsColorMode.viridis,
 );
 ```
+
+## Background Color
+
+`PointGlassOpenGLViewer` supports a configurable OpenGL background color through the `bgColor` option.
+
+```dart
+PointGlassOpenGLViewer(
+  controller: _controller,
+  bgColor: Colors.black,
+  grid: PointGlassOpenGLGrid(),
+  axis: PointGlassOpenGLAxis(),
+);
+```
+
+The default background color is `Color(0xFF1A1A1A)`.
 
 ## Primitive Data Format
 
@@ -260,6 +276,7 @@ Rust Core Layer
 * macOS, iOS, and Web are not supported.
 * Mouse coordinates are displayed relative to the ground plane.
 * Dual joystick controls are disabled by default and can be enabled with `enableJoystick`.
+* The OpenGL background color can be configured with `bgColor`.
 * Point cloud data must be provided as `Float32List`.
 * Point data uses 4 float values per point: `X`, `Y`, `Z`, and `Value`.
 * Line and polygon data use 8 float values per vertex: `X`, `Y`, `Z`, `R`, `G`, `B`, `A`, and `Size/Thickness`.
