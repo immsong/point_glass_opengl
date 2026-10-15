@@ -2,7 +2,7 @@
 
 A Flutter package for high-performance 3D point cloud visualization using native Rust, OpenGL, and OpenGL ES rendering.
 
-`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, configurable background colors, and real-time display parameter updates.
+`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, configurable background colors, X-axis viewer flipping, and real-time display parameter updates.
 
 ## Features
 
@@ -15,6 +15,7 @@ A Flutter package for high-performance 3D point cloud visualization using native
 * **Mouse Coordinate Display**: Optional cursor overlay showing the corresponding X/Y position on the ground plane.
 * **Depth-based Color Mapping**: Real-time point cloud color mapping using a value range.
 * **Display Controls**: Runtime control of point size, alpha, value range, color mode, and background color.
+* **X-axis Flip**: Toggle the rendered scene orientation along the X axis via the controller, without changing underlying point data.
 * **Declarative Flutter API**: Flutter-friendly viewer models and external controller support.
 
 ## Platform Support
@@ -34,7 +35,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  point_glass_opengl: ^0.3.1
+  point_glass_opengl: ^0.4.0
 ```
 
 Then run:
@@ -145,6 +146,23 @@ PointGlassOpenGLViewer(
 ```
 
 The default background color is `Color(0xFF1A1A1A)`.
+
+## X-axis Flip
+
+The controller can flip the entire rendered scene along the X axis. This includes point clouds, grids, axes, and 3D-to-screen label projections.
+
+```dart
+final controller = PointGlassOpenGLController();
+
+controller.setFlipX(true);  // Flip the X axis relative to the original viewer.
+controller.setFlipX(false); // Restore the original viewer orientation (default).
+
+final isFlipped = controller.flipX;
+```
+
+The flip can be configured before native renderer initialization or changed at runtime. It changes the renderer's MVP transformation only; source point coordinates are preserved and point cloud buffers do not need to be re-uploaded.
+
+**Native library compatibility:** Version 0.4.0 requires an updated native Rust library exporting `set_flip_x`. Update the Dart package and the corresponding native binaries together.
 
 ## Primitive Data Format
 
@@ -277,6 +295,7 @@ Rust Core Layer
 * Mouse coordinates are displayed relative to the ground plane.
 * Dual joystick controls are disabled by default and can be enabled with `enableJoystick`.
 * The OpenGL background color can be configured with `bgColor`.
+* X-axis flipping is disabled by default and can be toggled with `PointGlassOpenGLController.setFlipX(bool)`.
 * Point cloud data must be provided as `Float32List`.
 * Point data uses 4 float values per point: `X`, `Y`, `Z`, and `Value`.
 * Line and polygon data use 8 float values per vertex: `X`, `Y`, `Z`, `R`, `G`, `B`, `A`, and `Size/Thickness`.

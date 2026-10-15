@@ -1,3 +1,10 @@
+## 0.4.0
+
+* Added optional X-axis flipping for the entire OpenGL viewer through `PointGlassOpenGLController.setFlipX(bool)`.
+* Added the `flipX` controller getter to read the current flip state (disabled by default).
+* Applied the flip consistently to point clouds, grids, axes, and 3D-to-screen projections using the renderer's MVP matrix.
+* Added the native `set_flip_x` FFI binding and Rust renderer state without modifying point data or re-uploading VBOs.
+
 ## 0.3.1
 
 * Added configurable OpenGL background color support with the `bgColor` option.
