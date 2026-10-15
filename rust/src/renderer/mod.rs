@@ -81,6 +81,10 @@ pub struct Renderer {
     pub(crate) pitch: f32,
     pub(crate) roll: f32,
 
+    // 기존 X축 반전(-x)에 추가로 적용하는 사용자 Flip 상태.
+    // false: 기존 화면 유지 (-x), true: 기존 화면에서 X축 반전 (+x)
+    pub(crate) flip_x: bool,
+
     // camera 거리
     pub(crate) radius: f32,
 
@@ -148,6 +152,7 @@ impl Renderer {
             yaw: 0.0,
             pitch: 0.0,
             roll: 0.0,
+            flip_x: false,
             radius: 8.0,
 
             target_x: 0.0,
@@ -484,7 +489,7 @@ impl Renderer {
     // MVP = Projection * View * Model
     //
     // Model:
-    // - 입력된 3D 좌표의 X축 방향 반전
+    // - 입력된 3D 좌표의 기존 X축 반전과 사용자 Flip 상태
     // - roll 값에 따른 Z축 회전
     //
     // View:
@@ -494,7 +499,7 @@ impl Renderer {
     // - perspective 투영과 화면 종횡비 반영
     //
     // 최종 변환 순서 (오른쪽에서 왼쪽으로 적용):
-    // position -> X축 반전 -> Z축 roll 회전 -> camera view 변환 -> perspective projection
+    // position -> X축 변환 -> Z축 roll 회전 -> camera view 변환 -> perspective projection
     pub(crate) fn calculate_mvp(&self) -> [f32; 16] {
         let eye_x = self.target_x + self.radius * self.pitch.cos() * self.yaw.sin();
         let eye_y = self.target_y + self.radius * self.pitch.sin();
@@ -524,16 +529,18 @@ impl Renderer {
             cos_z, sin_z, 0.0, 0.0, -sin_z, cos_z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
 
-        // 입력 좌표의 X축 방향을 반전하는 matrix
-        // (x, y, z) -> (-x, y, z)
-        let flip_x = [
-            -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        // 기존 Viewer는 기본적으로 X를 -X로 변환했음.
+        // 신규 Flip을 켜면 기존 화면을 다시 X축 반전하므로 최종 X 부호는 +가 됨.
+        // false: (-x, y, z), true: (x, y, z)
+        let x_scale = if self.flip_x { 1.0 } else { -1.0 };
+        let flip_x_matrix = [
+            x_scale, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
 
         // column vector 기준으로 오른쪽 matrix부터 연산 적용.
-        // model = rotation * flip_x
-        // 따라서: 1. X축 반전 -> 2. Z축 roll 회전 순서로 적용됨
-        let model = multiply_matrices(rotation, flip_x);
+        // model = rotation * flip_x_matrix
+        // 따라서: 1. X축 변환 -> 2. Z축 roll 회전 순서로 적용됨
+        let model = multiply_matrices(rotation, flip_x_matrix);
 
         multiply_matrices(view_projection, model)
     }

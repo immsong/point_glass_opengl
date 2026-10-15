@@ -46,6 +46,11 @@ class PointGlassOpenGLController with ChangeNotifier {
   bool _renderRequestedWhileBusy = false;
   bool _notifyListenersPending = false;
 
+  // false: 기존 화면 유지, true: 기존 화면에서 X축 반전.
+  // Renderer 초기화 이전에도 상태를 저장해 적용할 수 있음.
+  bool _flipX = false;
+  bool get flipX => _flipX;
+
   // Camera 좌우 orbit 각도
   double yaw = pi;
 
@@ -70,18 +75,9 @@ class PointGlassOpenGLController with ChangeNotifier {
 
     // Rust Renderer 생성 후 초기 camera와 viewport 상태 전달
     _rendererPtr = _bindings.createRenderer();
-    _bindings.updateCamera(
-      _rendererPtr!,
-      yaw,
-      pitch,
-      roll,
-      radius,
-    );
-    _bindings.resizeRenderer(
-      _rendererPtr!,
-      width,
-      height,
-    );
+    _bindings.updateCamera(_rendererPtr!, yaw, pitch, roll, radius);
+    _bindings.setFlipX(_rendererPtr!, _flipX);
+    _bindings.resizeRenderer(_rendererPtr!, width, height);
     _bindings.setClearColor(
       _rendererPtr!,
       bgColor.r,
@@ -109,13 +105,7 @@ class PointGlassOpenGLController with ChangeNotifier {
       return;
     }
 
-    _bindings.setClearColor(
-      _rendererPtr!,
-      color.r,
-      color.g,
-      color.b,
-      color.a,
-    );
+    _bindings.setClearColor(_rendererPtr!, color.r, color.g, color.b, color.a);
     render();
   }
 
@@ -143,12 +133,7 @@ class PointGlassOpenGLController with ChangeNotifier {
     }
 
     // Rust에서 입력 좌표를 일괄 투영
-    _bindings.project3DToScreenBatch(
-      _rendererPtr!,
-      inPtr,
-      count,
-      outPtr,
-    );
+    _bindings.project3DToScreenBatch(_rendererPtr!, inPtr, count, outPtr);
 
     // Native output을 Dart Offset 목록으로 변환
     final results = <Offset?>[];
@@ -209,11 +194,7 @@ class PointGlassOpenGLController with ChangeNotifier {
         return null;
       }
 
-      return vm.Vector3(
-        outPtr[0],
-        outPtr[1],
-        outPtr[2],
-      );
+      return vm.Vector3(outPtr[0], outPtr[1], outPtr[2]);
     } finally {
       calloc.free(outPtr);
     }
@@ -230,11 +211,7 @@ class PointGlassOpenGLController with ChangeNotifier {
     }
 
     // Rust Renderer와 native texture에 새로운 크기 전달
-    _bindings.resizeRenderer(
-      _rendererPtr!,
-      width,
-      height,
-    );
+    _bindings.resizeRenderer(_rendererPtr!, width, height);
     await _channel.invokeMethod('resizeTexture', {
       'width': width,
       'height': height,
@@ -435,6 +412,24 @@ class PointGlassOpenGLController with ChangeNotifier {
   }
 
   // ============================================================================
+  // Viewer transform
+  // ============================================================================
+
+  /// 기존 Viewer 화면을 기준으로 X축 반전을 켜거나 끔.
+  /// PointCloud/Grid/Axis와 3D 좌표 투영에 동일하게 적용됨.
+  /// 포인트 재파싱이나 VBO 업로드 없이 화면만 다시 그림.
+  void setFlipX(bool enabled) {
+    if (_flipX == enabled) return;
+    _flipX = enabled;
+
+    final renderer = _rendererPtr;
+    if (renderer == null) return;
+
+    _bindings.setFlipX(renderer, enabled);
+    render();
+  }
+
+  // ============================================================================
   // Camera control
   // ============================================================================
 
@@ -450,13 +445,7 @@ class PointGlassOpenGLController with ChangeNotifier {
     yaw = (yaw - deltaX * 0.003).clamp(0, pi * 2).toDouble();
     pitch = (pitch - deltaY * 0.003).clamp(pi, pi * 2).toDouble();
 
-    _bindings.updateCamera(
-      renderer,
-      yaw,
-      pitch,
-      roll,
-      radius,
-    );
+    _bindings.updateCamera(renderer, yaw, pitch, roll, radius);
 
     render();
   }
@@ -470,13 +459,7 @@ class PointGlassOpenGLController with ChangeNotifier {
     }
 
     roll = (roll + (deltaZ * 0.0015)) % (pi * 2);
-    _bindings.updateCamera(
-      renderer,
-      yaw,
-      pitch,
-      roll,
-      radius,
-    );
+    _bindings.updateCamera(renderer, yaw, pitch, roll, radius);
     render();
   }
 
@@ -488,11 +471,7 @@ class PointGlassOpenGLController with ChangeNotifier {
       return;
     }
 
-    _bindings.panCamera(
-      renderer,
-      screenDx.toDouble(),
-      screenDy.toDouble(),
-    );
+    _bindings.panCamera(renderer, screenDx.toDouble(), screenDy.toDouble());
     render();
   }
 
@@ -506,13 +485,7 @@ class PointGlassOpenGLController with ChangeNotifier {
 
     // Camera 거리가 0 이하가 되지 않도록 최소값 제한
     radius = (radius * scaleFactor).clamp(0.1, double.infinity);
-    _bindings.updateCamera(
-      renderer,
-      yaw,
-      pitch,
-      roll,
-      radius,
-    );
+    _bindings.updateCamera(renderer, yaw, pitch, roll, radius);
 
     render();
   }

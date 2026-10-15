@@ -28,15 +28,9 @@ typedef _RenderToBufferC = Void Function(
 // Point, line, polygon 배열을 Rust로 전달하는 공통 FFI signature.
 // `Pointer<Float>`는 `Float32List`를 복사한 native buffer 주소.
 typedef _SetDataC = Void Function(
-  Pointer<Void> renderer,
-  Pointer<Float> data,
-  IntPtr length,
-);
+    Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
 typedef _SetDataDart = void Function(
-  Pointer<Void> renderer,
-  Pointer<Float> data,
-  int length,
-);
+    Pointer<Void> renderer, Pointer<Float> data, int length);
 
 typedef _UpdateCameraC = Void Function(
   Pointer<Void> renderer,
@@ -53,16 +47,14 @@ typedef _UpdateCameraDart = void Function(
   double radius,
 );
 
+// X축 Flip: 0 = 기존 화면, 1 = 기존 화면에서 X축 반전.
+typedef _SetFlipXC = Void Function(Pointer<Void> renderer, Uint8 enabled);
+typedef _SetFlipXDart = void Function(Pointer<Void> renderer, int enabled);
+
 typedef _ResizeRendererC = Void Function(
-  Pointer<Void> renderer,
-  Uint32 width,
-  Uint32 height,
-);
+    Pointer<Void> renderer, Uint32 width, Uint32 height);
 typedef _ResizeRendererDart = void Function(
-  Pointer<Void> renderer,
-  int width,
-  int height,
-);
+    Pointer<Void> renderer, int width, int height);
 
 typedef _SetClearColorC = Void Function(
   Pointer<Void> renderer,
@@ -79,16 +71,9 @@ typedef _SetClearColorDart = void Function(
   double alpha,
 );
 
-typedef _PanCameraC = Void Function(
-  Pointer<Void> renderer,
-  Float dx,
-  Float dy,
-);
+typedef _PanCameraC = Void Function(Pointer<Void> renderer, Float dx, Float dy);
 typedef _PanCameraDart = void Function(
-  Pointer<Void> renderer,
-  double dx,
-  double dy,
-);
+    Pointer<Void> renderer, double dx, double dy);
 
 typedef _Project3DToScreenBatchC = Void Function(
   Pointer<Void> renderer,
@@ -151,6 +136,7 @@ class PointGlassOpenGLNativeBindings {
     required _SetDataDart setLines,
     required _SetDataDart setPolygons,
     required _UpdateCameraDart updateCamera,
+    required _SetFlipXDart setFlipX,
     required _ResizeRendererDart resizeRenderer,
     required _SetClearColorDart setClearColor,
     required _PanCameraDart panCamera,
@@ -164,6 +150,7 @@ class PointGlassOpenGLNativeBindings {
         _setLines = setLines,
         _setPolygons = setPolygons,
         _updateCamera = updateCamera,
+        _setFlipX = setFlipX,
         _resizeRenderer = resizeRenderer,
         _setClearColor = setClearColor,
         _panCamera = panCamera,
@@ -179,6 +166,7 @@ class PointGlassOpenGLNativeBindings {
   final _SetDataDart _setPolygons;
 
   final _UpdateCameraDart _updateCamera;
+  final _SetFlipXDart _setFlipX;
   final _ResizeRendererDart _resizeRenderer;
   final _SetClearColorDart _setClearColor;
   final _PanCameraDart _panCamera;
@@ -210,6 +198,9 @@ class PointGlassOpenGLNativeBindings {
     final updateCamera = library
         .lookup<NativeFunction<_UpdateCameraC>>('update_camera')
         .asFunction<_UpdateCameraDart>();
+    final setFlipX = library
+        .lookup<NativeFunction<_SetFlipXC>>('set_flip_x')
+        .asFunction<_SetFlipXDart>();
     final resizeRenderer = library
         .lookup<NativeFunction<_ResizeRendererC>>('resize_renderer')
         .asFunction<_ResizeRendererDart>();
@@ -235,8 +226,9 @@ class PointGlassOpenGLNativeBindings {
         )
         .asFunction<_SetPointCloudDisplayParamsDart>();
 
-    final renderFramePointer =
-        library.lookup<NativeFunction<_RenderFrameC>>('render_frame');
+    final renderFramePointer = library.lookup<NativeFunction<_RenderFrameC>>(
+      'render_frame',
+    );
     final renderFrame = renderFramePointer.asFunction<_RenderFrameDart>();
 
     // Native plugin이 호출할 render 함수 주소 선택.
@@ -256,6 +248,7 @@ class PointGlassOpenGLNativeBindings {
       setLines: setLines,
       setPolygons: setPolygons,
       updateCamera: updateCamera,
+      setFlipX: setFlipX,
       resizeRenderer: resizeRenderer,
       setClearColor: setClearColor,
       panCamera: panCamera,
@@ -292,27 +285,15 @@ class PointGlassOpenGLNativeBindings {
     _renderFrame(renderer);
   }
 
-  void setPoints(
-    Pointer<Void> renderer,
-    Pointer<Float> data,
-    int length,
-  ) {
+  void setPoints(Pointer<Void> renderer, Pointer<Float> data, int length) {
     _setPoints(renderer, data, length);
   }
 
-  void setLines(
-    Pointer<Void> renderer,
-    Pointer<Float> data,
-    int length,
-  ) {
+  void setLines(Pointer<Void> renderer, Pointer<Float> data, int length) {
     _setLines(renderer, data, length);
   }
 
-  void setPolygons(
-    Pointer<Void> renderer,
-    Pointer<Float> data,
-    int length,
-  ) {
+  void setPolygons(Pointer<Void> renderer, Pointer<Float> data, int length) {
     _setPolygons(renderer, data, length);
   }
 
@@ -326,11 +307,11 @@ class PointGlassOpenGLNativeBindings {
     _updateCamera(renderer, yaw, pitch, roll, radius);
   }
 
-  void resizeRenderer(
-    Pointer<Void> renderer,
-    int width,
-    int height,
-  ) {
+  void setFlipX(Pointer<Void> renderer, bool enabled) {
+    _setFlipX(renderer, enabled ? 1 : 0);
+  }
+
+  void resizeRenderer(Pointer<Void> renderer, int width, int height) {
     _resizeRenderer(renderer, width, height);
   }
 
@@ -344,11 +325,7 @@ class PointGlassOpenGLNativeBindings {
     _setClearColor(renderer, red, green, blue, alpha);
   }
 
-  void panCamera(
-    Pointer<Void> renderer,
-    double dx,
-    double dy,
-  ) {
+  void panCamera(Pointer<Void> renderer, double dx, double dy) {
     _panCamera(renderer, dx, dy);
   }
 
@@ -368,13 +345,7 @@ class PointGlassOpenGLNativeBindings {
     double planeZ,
     Pointer<Float> outPosition,
   ) {
-    return _screenToWorldOnPlane(
-      renderer,
-      ndcX,
-      ndcY,
-      planeZ,
-      outPosition,
-    );
+    return _screenToWorldOnPlane(renderer, ndcX, ndcY, planeZ, outPosition);
   }
 
   void setPointCloudDisplayParams(
@@ -385,13 +356,6 @@ class PointGlassOpenGLNativeBindings {
     double max,
     int mode,
   ) {
-    _setPointCloudDisplayParams(
-      renderer,
-      alpha,
-      size,
-      min,
-      max,
-      mode,
-    );
+    _setPointCloudDisplayParams(renderer, alpha, size, min, max, mode);
   }
 }
