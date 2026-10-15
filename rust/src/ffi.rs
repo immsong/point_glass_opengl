@@ -284,6 +284,23 @@ pub extern "C" fn update_camera(r: *mut c_void, y: f32, p: f32, roll: f32, rad: 
     re.radius = rad.max(0.1);
 }
 
+// Viewer 전체(PointCloud, Grid, Axis)의 X축 Flip 상태 변경.
+// false(0)는 기존 화면, true(1)는 기존 화면 대비 X축 반전.
+// 실제 좌표/VBO를 수정하지 않고 calculate_mvp()에서 변환한다.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_flip_x(r: *mut c_void, enabled: u8) {
+    if r.is_null() {
+        return;
+    }
+
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    re.flip_x = enabled != 0;
+}
+
 // Renderer 크기 갱신
 //
 // width/height는 projection aspect 계산에 사용.
