@@ -2,12 +2,13 @@
 
 A Flutter package for high-performance 3D point cloud visualization using native Rust, OpenGL, and OpenGL ES rendering.
 
-`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, configurable background colors, X-axis viewer flipping, and real-time display parameter updates.
+`point_glass_opengl` provides a native rendering pipeline for visualizing point cloud data in Flutter applications on Windows, Linux, and Android. It supports interactive 3D camera controls, grid and axis overlays, label projection, mouse coordinate display, optional joystick controls, configurable background colors, X-axis viewer flipping, per-batch rendering settings, and real-time display parameter updates.
 
 ## Features
 
 * **Native 3D Rendering**: Rust-based OpenGL and OpenGL ES rendering core for high-performance 3D visualization.
 * **Point Cloud Rendering**: FFI-based point cloud rendering pipeline with VBO support.
+* **Per-batch Rendering**: Independent color maps, point sizes, opacity, and value ranges for multiple point cloud batches in a shared buffer.
 * **Cross-platform Support**: Native rendering support for Windows, Linux, and Android.
 * **3D Camera Controls**: Built-in orbit, pan, roll, and zoom controls.
 * **Joystick Controls**: Optional dual joystick controls for XY movement and camera rotation.
@@ -35,7 +36,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  point_glass_opengl: ^0.4.0
+  point_glass_opengl: ^0.4.1
 ```
 
 Then run:
@@ -116,6 +117,78 @@ final pointData = Float32List.fromList([
 _controller.setPoints(pointData);
 ```
 
+The existing `setPoints()` API continues to render the point cloud using a single set of display parameters.
+
+## Per-batch Point Cloud Rendering
+
+Version 0.4.1 introduces `PointGlassOpenGLPointBatch` for rendering different portions of the same point cloud with independent display settings. Batches share the underlying point buffer and are drawn with their own color map, point size, opacity, and value range.
+
+Use `setPointBatches()` to submit point data and its batch configuration together:
+
+```dart
+import 'dart:typed_data';
+
+final pointData = Float32List.fromList([
+  // x, y, z, value
+  0.0, 0.0, 0.0, 0.0,
+  1.0, 0.0, 0.5, 0.5,
+  2.0, 0.0, 1.0, 1.0,
+  3.0, 0.0, 0.5, 0.25,
+]);
+
+_controller.setPointBatches(
+  points: pointData,
+  batches: const [
+    PointGlassOpenGLPointBatch(
+      first: 0,
+      count: 2,
+      pointSize: 3.0,
+      opacity: 1.0,
+      valueMin: 0.0,
+      valueMax: 1.0,
+      colorMode: PointGlassOpenGLPointsColorMode.viridis,
+    ),
+    PointGlassOpenGLPointBatch(
+      first: 2,
+      count: 2,
+      pointSize: 5.0,
+      opacity: 0.8,
+      valueMin: 0.0,
+      valueMax: 1.0,
+      colorMode: PointGlassOpenGLPointsColorMode.turbo2,
+    ),
+  ],
+);
+```
+
+Each batch specifies a point range, not a `Float32List` offset. `first` is the starting point index and `count` is the number of points. Batch ranges must be sorted, non-overlapping, and within the submitted point buffer. Gaps between batches are not rendered; an empty batch list hides all points.
+
+### Updating Batch Settings
+
+Use `updatePointBatches()` to change the rendering configuration without retransmitting the point cloud data:
+
+```dart
+_controller.updatePointBatches(const [
+  PointGlassOpenGLPointBatch(
+    first: 0,
+    count: 2,
+    colorMode: PointGlassOpenGLPointsColorMode.viridis2,
+    valueMin: 0.0,
+    valueMax: 1.0,
+  ),
+  PointGlassOpenGLPointBatch(
+    first: 2,
+    count: 2,
+    colorMode: PointGlassOpenGLPointsColorMode.coolwarm2,
+    pointSize: 5.0,
+    valueMin: 0.0,
+    valueMax: 1.0,
+  ),
+]);
+```
+
+The batch settings are validated against the current point count. `updatePointBatches()` changes the rendering settings only; it does not re-upload point data. Calling `setPoints()` again switches back to single point cloud rendering.
+
 ## Display Parameters
 
 Point cloud display properties can be updated in real time.
@@ -131,6 +204,28 @@ _controller.setPointCloudDisplayParams(
   PointGlassOpenGLPointsColorMode.viridis,
 );
 ```
+
+For per-batch rendering, configure these properties on each `PointGlassOpenGLPointBatch` instead.
+
+## Color Map Variants
+
+Version 0.4.1 adds alternate visual variants for Viridis, Turbo, Rainbow, and Coolwarm. Each option is available through `PointGlassOpenGLPointsColorMode`:
+
+| Color Map | Enum | Mode |
+| --------- | ---- | ---- |
+| Viridis | `viridis` | 0 |
+| Viridis 2 | `viridis2` | 1 |
+| Turbo | `turbo` | 2 |
+| Turbo 2 | `turbo2` | 3 |
+| Rainbow | `rainbow` | 4 |
+| Rainbow 2 | `rainbow2` | 5 |
+| Coolwarm | `coolwarm` | 6 |
+| Coolwarm 2 | `coolwarm2` | 7 |
+| Grayscale | `grayscale` | 8 |
+
+Select a color map with `setPointCloudDisplayParams()` for a single point cloud or with the batch `colorMode` property for per-batch rendering.
+
+**Compatibility note:** The enum names for the original modes remain available, but the numeric IDs for Turbo, Rainbow, Coolwarm, and Grayscale have changed. Applications that store raw numeric mode IDs must update their mappings.
 
 ## Background Color
 
@@ -161,8 +256,6 @@ final isFlipped = controller.flipX;
 ```
 
 The flip can be configured before native renderer initialization or changed at runtime. It changes the renderer's MVP transformation only; source point coordinates are preserved and point cloud buffers do not need to be re-uploaded.
-
-**Native library compatibility:** Version 0.4.0 requires an updated native Rust library exporting `set_flip_x`. Update the Dart package and the corresponding native binaries together.
 
 ## Primitive Data Format
 
@@ -262,6 +355,7 @@ PointGlassOpenGLViewer(
 
 * `PointGlassOpenGLViewer` for rendering the 3D scene.
 * `PointGlassOpenGLController` for updating data and controlling the viewer.
+* `PointGlassOpenGLPointBatch` for configuring per-batch point cloud rendering.
 * `PointGlassOpenGLGrid` for 3D grid rendering.
 * `PointGlassOpenGLAxis` for X/Y/Z axis rendering.
 * `PointGlassOpenGLLabel` for projecting 3D labels onto the 2D screen.
@@ -275,18 +369,28 @@ This package uses a native rendering pipeline designed for real-time point cloud
 Flutter UI Layer
   - Declarative viewer models
   - User input handling
-  - Controller API
+  - Controller API and batch display configuration
 
 Platform Integration Layer
   - Windows/Linux Flutter texture integration
   - Android native surface integration
+  - Dart-to-Rust FFI bindings
 
 Rust Core Layer
   - OpenGL and OpenGL ES rendering
   - Shader and buffer management
-  - Point cloud VBO rendering
+  - Shared point cloud VBO with per-batch draw calls
   - 3D math and projection
 ```
+
+## Native Library Compatibility
+
+The Dart package and native Rust libraries must use compatible versions.
+
+* Version 0.4.0 introduced the `set_flip_x` FFI function.
+* Version 0.4.1 introduced `set_point_batches` and `update_point_batches`, along with support for color modes 0–8.
+
+Update the Dart package and corresponding native Rust binaries together.
 
 ## Notes
 
@@ -298,6 +402,9 @@ Rust Core Layer
 * X-axis flipping is disabled by default and can be toggled with `PointGlassOpenGLController.setFlipX(bool)`.
 * Point cloud data must be provided as `Float32List`.
 * Point data uses 4 float values per point: `X`, `Y`, `Z`, and `Value`.
+* Batch `first` and `count` values are measured in points, not float offsets.
+* Batch ranges must be ordered, non-overlapping, and within the available point data.
+* `updatePointBatches()` updates display settings without retransmitting point cloud data.
 * Line and polygon data use 8 float values per vertex: `X`, `Y`, `Z`, `R`, `G`, `B`, `A`, and `Size/Thickness`.
 
 ## Examples

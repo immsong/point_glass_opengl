@@ -1,3 +1,14 @@
+## 0.4.1
+
+* Added per-batch point cloud rendering with independent color maps, point sizes, opacity, and value ranges.
+* Added `PointGlassOpenGLPointBatch` for configuring individual point cloud batches.
+* Added `PointGlassOpenGLController.setPointBatches()` to update point cloud data and batch settings together.
+* Added `PointGlassOpenGLController.updatePointBatches()` to modify batch settings without re-uploading point data.
+* Added alternate color map variants for Viridis, Turbo, Rainbow, and Coolwarm.
+* Expanded color mode support from 0–4 to 0–8 in OpenGL 3.3 and OpenGL ES 3.0 shaders.
+* Added batch range and display parameter validation in Dart and Rust.
+* Preserved existing single point cloud rendering APIs.
+
 ## 0.4.0
 
 * Added optional X-axis flipping for the entire OpenGL viewer through `PointGlassOpenGLController.setFlipX(bool)`.
