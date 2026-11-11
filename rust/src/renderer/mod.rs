@@ -53,7 +53,7 @@ pub(crate) fn validate_point_batches(batches: &[PointBatch], point_count: usize)
             || !batch.value_min.is_finite()
             || !batch.value_max.is_finite()
             || batch.value_min > batch.value_max
-            || !(0..=4).contains(&batch.color_mode)
+            || !(0..=8).contains(&batch.color_mode)
         {
             return false;
         }
