@@ -56,13 +56,17 @@ uniform float uAlpha;
 
 // 컬러맵 선택 값.
 //
-// 현재 코드 기준:
+// 0: Viridis 1
+// 1: Viridis 2
+// 2: Turbo 1
+// 3: Turbo 2
+// 4: Rainbow 1
+// 5: Rainbow 2
+// 6: Coolwarm 1
+// 7: Coolwarm 2
+// 8: Grayscale
 //
-// 1: turbo
-// 2: rainbow HSV
-// 3: coolwarm
-// 4: grayscale
-// 그 외: viridis
+// 내부적으로 각 컬러맵의 1/2는 색상 방향이 반대.
 uniform int uColorMode;
 
 // ============================================================================
@@ -204,69 +208,73 @@ vec3 coolwarm(float x) {
 // [MAIN]
 // ============================================================================
 //
-// 점 하나의 최종 색상을 결정.
+// Point Cloud의 각 점에 적용할 최종 색상을 계산.
+//
+// Color Mode:
+// 0, 1 : Viridis 1/2
+// 2, 3 : Turbo 1/2
+// 4, 5 : Rainbow 1/2
+// 6, 7 : Coolwarm 1/2
+// 8    : Grayscale
+
 void main() {
     // ------------------------------------------------------------------------
-    // 1. vValue 정규화
+    // 1. Value 정규화
     // ------------------------------------------------------------------------
-    //
-    // raw value를 0.0 ~ 1.0 범위로 변환.
-    //
-    // normalized = 0.0 → 컬러맵 시작 색
-    // normalized = 1.0 → 컬러맵 끝 색
-    //
-    // 기존 코드:
-    //
-    // (vValue - uMin) / (uMax - uMin)
-    //
-    // 문제:
-    // uMax == uMin이면 0으로 나누게 됨.
-    //
-    // 그래서 range에 최소값을 둬서 방어.
+
     float range = max(abs(uMax - uMin), 0.000001f);
     float normalized = clamp((vValue - uMin) / range, 0.0f, 1.0f);
 
-    float displayValue = mix(0.20f, 1.0f, normalized);
-
-    // 최종 RGB 값
-    vec3 rgb;
-
     // ------------------------------------------------------------------------
-    // 2. 컬러맵 선택
+    // 2. Color Mode 해석
     // ------------------------------------------------------------------------
     //
-    // uColorMode 값에 따라 다른 색상 함수 사용.
-    if(uColorMode == 1) {
-        // Turbo
+    // 짝수: Color Map 1
+    // 홀수: Color Map 2 (색상 방향 반전)
+    //
+    // Grayscale(8)은 반전하지 않음.
+
+    if(uColorMode < 8 && (uColorMode % 2) == 1) {
+        normalized = 1.0f - normalized;
+    }
+
+    // 기존 컬러맵 표시 범위 유지 (20% ~ 100%)
+    float displayValue = mix(0.20f, 1.0f, normalized);
+
+    // 컬러맵 그룹 선택
+    int colorMap = uColorMode / 2;
+
+    // ------------------------------------------------------------------------
+    // 3. Color Map 적용
+    // ------------------------------------------------------------------------
+
+    vec3 rgb;
+
+    if(colorMap == 1) {
+        // Turbo 1 / Turbo 2
         rgb = turbo(displayValue);
-    } else if(uColorMode == 2) {
-        // Rainbow HSV
-        //
-        // hue 240도 = 파란색
-        // hue   0도 = 빨간색
-        //
-        // displayValue가 낮으면 파랑,
-        // 높으면 빨강이 되도록 1.0 - displayValue 사용.
+
+    } else if(colorMap == 2) {
+        // Rainbow 1 / Rainbow 2
         float hue = (1.0f - displayValue) * 240.0f / 360.0f;
         rgb = hsv2rgb(vec3(hue, 1.0f, 1.0f));
-    } else if(uColorMode == 3) {
-        // Coolwarm
+
+    } else if(colorMap == 3) {
+        // Coolwarm 1 / Coolwarm 2
         rgb = coolwarm(displayValue);
-    } else if(uColorMode == 4) {
+
+    } else if(colorMap == 4) {
         // Grayscale
-        //
-        // R, G, B가 같으면 회색.
-        rgb = vec3(displayValue, displayValue, displayValue);
+        rgb = vec3(displayValue);
+
     } else {
-        // 기본 컬러맵: Viridis
+        // Viridis 1 / Viridis 2
         rgb = viridis(displayValue);
     }
 
     // ------------------------------------------------------------------------
-    // 3. 최종 색상 출력
+    // 4. 최종 색상 출력
     // ------------------------------------------------------------------------
-    //
-    // RGB는 위에서 계산한 값.
-    // Alpha는 uniform으로 받은 전체 투명도.
+
     FragColor = vec4(rgb, uAlpha);
 }

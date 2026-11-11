@@ -1,9 +1,13 @@
 enum PointGlassOpenGLPointsColorMode {
   viridis(0, 'viridis'),
-  turbo(1, 'turbo'),
-  rainbow(2, 'rainbow'),
-  coolwarm(3, 'coolwarm'),
-  grayscale(4, 'grayscale');
+  viridis2(1, 'viridis2'),
+  turbo(2, 'turbo'),
+  turbo2(3, 'turbo2'),
+  rainbow(4, 'rainbow'),
+  rainbow2(5, 'rainbow2'),
+  coolwarm(6, 'coolwarm'),
+  coolwarm2(7, 'coolwarm2'),
+  grayscale(8, 'grayscale');
 
   final int value;
   final String label;
