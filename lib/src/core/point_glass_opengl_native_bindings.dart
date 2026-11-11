@@ -1,6 +1,32 @@
 import 'dart:ffi';
 import 'dart:io';
 
+// Rust의 #[repr(C)] PointBatch 구조체와 동일한 FFI 데이터 구조.
+// Batch별 Point cloud 표시 설정을 native 메모리로 전달하기 위해 사용.
+// 각 필드는 4 bytes이며, 구조체 전체 크기는 28 bytes.
+final class PointGlassOpenGLNativePointBatch extends Struct {
+  @Int32()
+  external int first;
+
+  @Int32()
+  external int count;
+
+  @Float()
+  external double pointSize;
+
+  @Float()
+  external double opacity;
+
+  @Float()
+  external double valueMin;
+
+  @Float()
+  external double valueMax;
+
+  @Int32()
+  external int colorMode;
+}
+
 // ============================================================================
 // FFI type definitions
 // ============================================================================
@@ -31,6 +57,36 @@ typedef _SetDataC = Void Function(
     Pointer<Void> renderer, Pointer<Float> data, IntPtr length);
 typedef _SetDataDart = void Function(
     Pointer<Void> renderer, Pointer<Float> data, int length);
+
+// Point cloud 데이터와 Batch별 표시 설정을 하나의 FFI 호출로 전달.
+// Rust에서 두 데이터를 함께 갱신하여 서로 다른 Frame의 데이터가 섞이지 않도록 함.
+typedef _SetPointBatchesC = Uint8 Function(
+  Pointer<Void> renderer,
+  Pointer<Float> points,
+  IntPtr pointFloatLength,
+  Pointer<PointGlassOpenGLNativePointBatch> batches,
+  IntPtr batchCount,
+);
+typedef _SetPointBatchesDart = int Function(
+  Pointer<Void> renderer,
+  Pointer<Float> points,
+  int pointFloatLength,
+  Pointer<PointGlassOpenGLNativePointBatch> batches,
+  int batchCount,
+);
+
+// Point cloud 데이터를 재전송하지 않고 Batch별 표시 설정만 갱신.
+// 기존 VBO를 유지하면서 Color Map, Point Size, Opacity, Value Range 변경.
+typedef _UpdatePointBatchesC = Uint8 Function(
+  Pointer<Void> renderer,
+  Pointer<PointGlassOpenGLNativePointBatch> batches,
+  IntPtr batchCount,
+);
+typedef _UpdatePointBatchesDart = int Function(
+  Pointer<Void> renderer,
+  Pointer<PointGlassOpenGLNativePointBatch> batches,
+  int batchCount,
+);
 
 typedef _UpdateCameraC = Void Function(
   Pointer<Void> renderer,
@@ -133,6 +189,8 @@ class PointGlassOpenGLNativeBindings {
     required _CreateRendererDart createRenderer,
     required _RenderFrameDart renderFrame,
     required _SetDataDart setPoints,
+    required _SetPointBatchesDart setPointBatches,
+    required _UpdatePointBatchesDart updatePointBatches,
     required _SetDataDart setLines,
     required _SetDataDart setPolygons,
     required _UpdateCameraDart updateCamera,
@@ -147,6 +205,8 @@ class PointGlassOpenGLNativeBindings {
   })  : _createRenderer = createRenderer,
         _renderFrame = renderFrame,
         _setPoints = setPoints,
+        _setPointBatches = setPointBatches,
+        _updatePointBatches = updatePointBatches,
         _setLines = setLines,
         _setPolygons = setPolygons,
         _updateCamera = updateCamera,
@@ -162,6 +222,8 @@ class PointGlassOpenGLNativeBindings {
   final _RenderFrameDart _renderFrame;
 
   final _SetDataDart _setPoints;
+  final _SetPointBatchesDart _setPointBatches;
+  final _UpdatePointBatchesDart _updatePointBatches;
   final _SetDataDart _setLines;
   final _SetDataDart _setPolygons;
 
@@ -189,6 +251,12 @@ class PointGlassOpenGLNativeBindings {
     final setPoints = library
         .lookup<NativeFunction<_SetDataC>>('set_points')
         .asFunction<_SetDataDart>();
+    final setPointBatches = library
+        .lookup<NativeFunction<_SetPointBatchesC>>('set_point_batches')
+        .asFunction<_SetPointBatchesDart>();
+    final updatePointBatches = library
+        .lookup<NativeFunction<_UpdatePointBatchesC>>('update_point_batches')
+        .asFunction<_UpdatePointBatchesDart>();
     final setLines = library
         .lookup<NativeFunction<_SetDataC>>('set_lines')
         .asFunction<_SetDataDart>();
@@ -245,6 +313,8 @@ class PointGlassOpenGLNativeBindings {
       createRenderer: createRenderer,
       renderFrame: renderFrame,
       setPoints: setPoints,
+      setPointBatches: setPointBatches,
+      updatePointBatches: updatePointBatches,
       setLines: setLines,
       setPolygons: setPolygons,
       updateCamera: updateCamera,
@@ -287,6 +357,31 @@ class PointGlassOpenGLNativeBindings {
 
   void setPoints(Pointer<Void> renderer, Pointer<Float> data, int length) {
     _setPoints(renderer, data, length);
+  }
+
+  bool setPointBatches(
+    Pointer<Void> renderer,
+    Pointer<Float> points,
+    int pointFloatLength,
+    Pointer<PointGlassOpenGLNativePointBatch> batches,
+    int batchCount,
+  ) {
+    return _setPointBatches(
+          renderer,
+          points,
+          pointFloatLength,
+          batches,
+          batchCount,
+        ) !=
+        0;
+  }
+
+  bool updatePointBatches(
+    Pointer<Void> renderer,
+    Pointer<PointGlassOpenGLNativePointBatch> batches,
+    int batchCount,
+  ) {
+    return _updatePointBatches(renderer, batches, batchCount) != 0;
   }
 
   void setLines(Pointer<Void> renderer, Pointer<Float> data, int length) {

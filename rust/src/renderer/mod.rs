@@ -7,6 +7,63 @@ use crate::math::{look_at, multiply_matrices, perspective};
 pub(crate) mod platform;
 mod shader;
 
+// 공유 Point cloud VBO에서 렌더링할 Batch 구간과 표시 설정.
+// first/count는 Float 배열 위치가 아닌 Point 인덱스 기준.
+// Dart FFI의 PointGlassOpenGLNativePointBatch와 동일한 메모리 구조.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PointBatch {
+    pub first: i32,
+    pub count: i32,
+    pub point_size: f32,
+    pub opacity: f32,
+    pub value_min: f32,
+    pub value_max: f32,
+    pub color_mode: i32,
+}
+
+// Batch 범위와 표시 설정의 유효성 검사.
+//
+// Batch는 순서대로 정렬되어야 하며 서로 겹치거나 Point cloud 범위를 초과할 수 없음.
+// 빈 Batch 목록은 렌더링하지 않으며, Batch 사이의 빈 구간은 허용.
+pub(crate) fn validate_point_batches(batches: &[PointBatch], point_count: usize) -> bool {
+    if point_count > i32::MAX as usize {
+        return false;
+    }
+
+    let mut previous_end = 0;
+    for batch in batches {
+        if batch.first < 0 || batch.count < 0 {
+            return false;
+        }
+
+        let first = batch.first as usize;
+        let count = batch.count as usize;
+        let Some(end) = first.checked_add(count) else {
+            return false;
+        };
+        if first < previous_end || end > point_count {
+            return false;
+        }
+
+        if !batch.point_size.is_finite()
+            || batch.point_size <= 0.0
+            || !batch.opacity.is_finite()
+            || !(0.0..=1.0).contains(&batch.opacity)
+            || !batch.value_min.is_finite()
+            || !batch.value_max.is_finite()
+            || batch.value_min > batch.value_max
+            || !(0..=4).contains(&batch.color_mode)
+        {
+            return false;
+        }
+
+        previous_end = end;
+    }
+
+    true
+}
+
 // ============================================================================
 // Renderer
 // ============================================================================
@@ -65,6 +122,10 @@ pub struct Renderer {
     // render()가 호출될 때 pending 데이터를 VBO로 업로드.
     pub(crate) pending_points: Option<Vec<f32>>,
     pub(crate) point_count: i32,
+
+    // None: 기존 단일 Point cloud 렌더링.
+    // Some: Batch별 표시 설정과 Point 구간을 적용하여 렌더링.
+    pub(crate) point_batches: Option<Vec<PointBatch>>,
 
     pub(crate) pending_lines: Option<Vec<f32>>,
     pub(crate) line_count: i32,
@@ -139,6 +200,7 @@ impl Renderer {
 
             pending_points: None,
             point_count: 0,
+            point_batches: None,
 
             pending_lines: None,
             line_count: 0,
@@ -744,18 +806,31 @@ impl Renderer {
                     b"uColorMode\0".as_ptr() as *const gl::types::GLchar,
                 );
 
-                // shader uniform 값 전달
+                // 단일 VAO/VBO와 Shader를 유지하면서 Batch별 표시 설정과 렌더링 구간만 변경.
                 gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
-                gl::Uniform1f(size_loc, self.point_size);
-                gl::Uniform1f(min_loc, self.value_min);
-                gl::Uniform1f(max_loc, self.value_max);
-                gl::Uniform1f(alpha_loc, self.alpha);
-                gl::Uniform1i(mode_loc, self.color_mode);
-
                 gl::BindVertexArray(self.vao_points);
 
-                // point_count 개수만큼 GL_POINTS로 그리기
-                gl::DrawArrays(gl::POINTS, 0, self.point_count);
+                if let Some(batches) = self.point_batches.as_ref() {
+                    for batch in batches {
+                        if batch.count == 0 {
+                            continue;
+                        }
+                        gl::Uniform1f(size_loc, batch.point_size);
+                        gl::Uniform1f(min_loc, batch.value_min);
+                        gl::Uniform1f(max_loc, batch.value_max);
+                        gl::Uniform1f(alpha_loc, batch.opacity);
+                        gl::Uniform1i(mode_loc, batch.color_mode);
+                        gl::DrawArrays(gl::POINTS, batch.first, batch.count);
+                    }
+                } else {
+                    // 기존 단일 Point cloud API의 렌더링 방식 유지.
+                    gl::Uniform1f(size_loc, self.point_size);
+                    gl::Uniform1f(min_loc, self.value_min);
+                    gl::Uniform1f(max_loc, self.value_max);
+                    gl::Uniform1f(alpha_loc, self.alpha);
+                    gl::Uniform1i(mode_loc, self.color_mode);
+                    gl::DrawArrays(gl::POINTS, 0, self.point_count);
+                }
             }
 
             #[cfg(target_os = "android")]

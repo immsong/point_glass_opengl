@@ -12,6 +12,7 @@ import 'package:ffi/ffi.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:point_glass_opengl/src/models/point_glass_opengl_points_color_mode.dart';
+import 'package:point_glass_opengl/src/models/point_glass_opengl_point_batch.dart';
 
 import 'point_glass_opengl_native_bindings.dart';
 
@@ -336,6 +337,166 @@ class PointGlassOpenGLController with ChangeNotifier {
     if (_sendDataToRust(_bindings.setPoints, points)) {
       render();
     }
+  }
+
+  // Batch의 인덱스 범위와 표시 옵션을 native buffer 할당 전에 검증.
+  // Rust FFI에서도 동일하게 검증하여 잘못된 설정이 기존 scene에 반영되지 않도록 함.
+  static void _validatePointBatches(
+    int pointCount,
+    List<PointGlassOpenGLPointBatch> batches,
+  ) {
+    var previousEnd = 0;
+    const maxGlIndex = 0x7fffffff;
+
+    if (pointCount > maxGlIndex) {
+      throw ArgumentError.value(pointCount, 'pointCount', 'Exceeds GLsizei');
+    }
+
+    for (final batch in batches) {
+      if (batch.first < previousEnd ||
+          batch.first < 0 ||
+          batch.count < 0 ||
+          batch.first > pointCount ||
+          batch.count > pointCount - batch.first) {
+        throw ArgumentError.value(
+          batch,
+          'batches',
+          'Ranges must be ordered, non-overlapping and within the point buffer',
+        );
+      }
+
+      if (!batch.opacity.isFinite ||
+          batch.opacity < 0.0 ||
+          batch.opacity > 1.0 ||
+          !batch.pointSize.isFinite ||
+          batch.pointSize <= 0.0 ||
+          !batch.valueMin.isFinite ||
+          !batch.valueMax.isFinite ||
+          batch.valueMin > batch.valueMax) {
+        throw ArgumentError.value(batch, 'batches', 'Invalid display parameters');
+      }
+
+      previousEnd = batch.first + batch.count;
+    }
+  }
+
+  // Batch 설정을 Rust FFI에 전달할 C ABI 배열로 복사.
+  Pointer<PointGlassOpenGLNativePointBatch> _copyPointBatches(
+    List<PointGlassOpenGLPointBatch> batches,
+  ) {
+    if (batches.isEmpty) {
+      return nullptr.cast<PointGlassOpenGLNativePointBatch>();
+    }
+
+    final pointer = calloc<PointGlassOpenGLNativePointBatch>(batches.length);
+
+    for (var i = 0; i < batches.length; i++) {
+      final batch = batches[i];
+      final native = pointer[i];
+      native.first = batch.first;
+      native.count = batch.count;
+      native.pointSize = batch.pointSize;
+      native.opacity = batch.opacity;
+      native.valueMin = batch.valueMin;
+      native.valueMax = batch.valueMax;
+      native.colorMode = batch.colorMode.value;
+    }
+
+    return pointer;
+  }
+
+  /// Point cloud 데이터와 센서별 Batch 표시 옵션을 갱신하고 화면 갱신을 예약.
+  ///
+  /// 데이터 포맷:
+  /// `[x, y, z, value, ...]`
+  ///
+  /// [batches]의 `first`, `count`는 Float32List offset이 아닌 포인트 단위의 시작 위치와 개수.
+  /// Batch 범위는 오름차순으로 정렬되어야 하며 서로 겹치거나 범위를 벗어날 수 없음.
+  /// 빈 구간은 그리지 않으며, 빈 Batch 목록을 전달하면 모든 포인트를 숨김.
+  /// Point cloud와 Batch 설정은 하나의 FFI 호출에서 함께 갱신.
+  ///
+  /// [setPoints] 또는 [setSceneData]에 `points`를 전달하면
+  /// 기존 단일 Point cloud 렌더링 방식으로 복귀.
+  void setPointBatches({
+    required Float32List points,
+    required List<PointGlassOpenGLPointBatch> batches,
+  }) {
+    if (points.length % 4 != 0) {
+      throw ArgumentError.value(points.length, 'points', 'Expected x/y/z/value');
+    }
+
+    _validatePointBatches(points.length ~/ 4, batches);
+
+    final renderer = _rendererPtr;
+
+    if (renderer == null) {
+      return;
+    }
+
+    var pointPtr = nullptr.cast<Float>();
+    var batchPtr = nullptr.cast<PointGlassOpenGLNativePointBatch>();
+
+    try {
+      if (points.isNotEmpty) {
+        pointPtr = calloc<Float>(points.length);
+      }
+
+      batchPtr = _copyPointBatches(batches);
+
+      if (points.isNotEmpty) {
+        pointPtr.asTypedList(points.length).setAll(0, points);
+      }
+
+      if (!_bindings.setPointBatches(
+        renderer,
+        pointPtr,
+        points.length,
+        batchPtr,
+        batches.length,
+      )) {
+        throw StateError('Native renderer rejected point batches');
+      }
+    } finally {
+      if (pointPtr != nullptr) {
+        calloc.free(pointPtr);
+      }
+
+      if (batchPtr != nullptr) {
+        calloc.free(batchPtr);
+      }
+    }
+
+    render();
+  }
+
+  /// Point cloud 데이터를 재전송하지 않고 Batch 표시 옵션을 갱신.
+  ///
+  /// Batch 범위는 마지막으로 전달된 Point cloud 데이터를 기준으로 검증.
+  /// 기존 단일 Point cloud 데이터에도 Batch 설정을 적용할 수 있음.
+  void updatePointBatches(List<PointGlassOpenGLPointBatch> batches) {
+    // Dart에서 Batch 범위와 표시 옵션을 먼저 검증하고,
+    // 실제 포인트 개수 기준의 범위 검증은 Rust에서 추가 수행.
+    _validatePointBatches(0x7fffffff, batches);
+
+    final renderer = _rendererPtr;
+
+    if (renderer == null) {
+      return;
+    }
+
+    final batchPtr = _copyPointBatches(batches);
+
+    try {
+      if (!_bindings.updatePointBatches(renderer, batchPtr, batches.length)) {
+        throw StateError('Invalid ranges for the current point buffer');
+      }
+    } finally {
+      if (batches.isNotEmpty) {
+        calloc.free(batchPtr);
+      }
+    }
+
+    render();
   }
 
   /// Line 데이터를 갱신하고 화면 갱신을 예약.
