@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 
 use crate::math::{invert_matrix, transform_vec4};
-use crate::renderer::Renderer;
+use crate::renderer::{PointBatch, Renderer, validate_point_batches};
 
 #[cfg(target_os = "windows")]
 use crate::renderer::platform;
@@ -206,6 +206,102 @@ pub extern "C" fn set_points(r: *mut c_void, d: *const f32, l: usize) {
         // Dart 메모리를 계속 참조하면 위험하므로 Rust Vec으로 복사
         re.pending_points = Some(unsafe { std::slice::from_raw_parts(d, l) }.to_vec());
     }
+
+    // 기존 set_points()를 호출하면 Batch 모드를 해제하고
+    // 기존 단일 Point cloud 렌더링 방식으로 복귀.
+    re.point_batches = None;
+}
+
+// Point cloud 데이터와 Batch별 표시 설정을 한 번에 갱신.
+//
+// 잘못된 입력은 0, 정상 처리 시 1 반환.
+// 실패하면 기존 데이터를 유지하며, FFI 입력 데이터는 Rust Vec으로 복사하므로
+// 함수 반환 후 Dart에서 native buffer를 해제할 수 있음.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_point_batches(
+    r: *mut c_void,
+    points: *const f32,
+    point_float_length: usize,
+    batches: *const PointBatch,
+    batch_count: usize,
+) -> u8 {
+    if r.is_null()
+        || point_float_length % 4 != 0
+        || point_float_length / 4 > i32::MAX as usize
+        || point_float_length > isize::MAX as usize / std::mem::size_of::<f32>()
+        || batch_count > isize::MAX as usize / std::mem::size_of::<PointBatch>()
+        || (point_float_length > 0 && points.is_null())
+        || (batch_count > 0 && batches.is_null())
+    {
+        return 0;
+    }
+
+    let point_slice = if point_float_length == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(points, point_float_length) }
+    };
+
+    let batch_slice = if batch_count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(batches, batch_count) }
+    };
+
+    if !validate_point_batches(batch_slice, point_float_length / 4) {
+        return 0;
+    }
+
+    // Renderer 잠금 이전에 FFI 입력 데이터를 Rust Vec으로 복사.
+    // 잠금 획득 후 Point cloud 데이터와 Batch 설정을 함께 갱신.
+    let point_data = point_slice.to_vec();
+    let batch_data = batch_slice.to_vec();
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    re.pending_points = Some(point_data);
+    re.point_batches = Some(batch_data);
+    1
+}
+
+// Point cloud 데이터를 재전송하지 않고 Batch별 표시 설정과 렌더링 구간만 갱신.
+//
+// 기존 VBO를 유지하며, set_points()로 전달한
+// 단일 Point cloud 데이터에도 Batch 설정을 적용할 수 있음.
+#[unsafe(no_mangle)]
+pub extern "C" fn update_point_batches(
+    r: *mut c_void,
+    batches: *const PointBatch,
+    batch_count: usize,
+) -> u8 {
+    if r.is_null()
+        || batch_count > isize::MAX as usize / std::mem::size_of::<PointBatch>()
+        || (batch_count > 0 && batches.is_null())
+    {
+        return 0;
+    }
+
+    let batch_slice = if batch_count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(batches, batch_count) }
+    };
+
+    let handle = unsafe { &*r.cast::<RendererHandle>() };
+    let mut re = handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let point_count = re
+        .pending_points
+        .as_ref()
+        .map_or(re.point_count as usize, |data| data.len() / 4);
+    if !validate_point_batches(batch_slice, point_count) {
+        return 0;
+    }
+
+    re.point_batches = Some(batch_slice.to_vec());
+    1
 }
 
 // line 데이터 설정
