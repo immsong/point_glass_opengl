@@ -41,11 +41,30 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
+# Select the prebuilt native library for the target architecture.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(NATIVE_ARCH "x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(NATIVE_ARCH "aarch64")
+else()
+  message(FATAL_ERROR
+    "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+set(NATIVE_LIBRARY
+  "${CMAKE_CURRENT_SOURCE_DIR}/shared/${NATIVE_ARCH}/libpoint_glass_opengl_core.so"
+)
+
+if(NOT EXISTS "${NATIVE_LIBRARY}")
+  message(FATAL_ERROR
+    "Native library not found: ${NATIVE_LIBRARY}")
+endif()
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
 set(point_glass_opengl_bundled_libraries
-  "${CMAKE_CURRENT_SOURCE_DIR}/shared/libpoint_glass_opengl_core.so"
+  "${NATIVE_LIBRARY}"
   PARENT_SCOPE
 )
 
