@@ -1,3 +1,11 @@
+## 0.4.2
+
+* Added Linux ARM64 (aarch64) support.
+* Added prebuilt native Rust libraries for Linux x86_64 and aarch64 architectures.
+* Added automatic architecture-based native library selection in CMake.
+* Updated the Rust desktop build script to support Linux ARM64 cross-compilation.
+* Preserved existing Windows, Linux x86_64, and Android support.
+
 ## 0.4.1
 
 * Added per-batch point cloud rendering with independent color maps, point sizes, opacity, and value ranges.
