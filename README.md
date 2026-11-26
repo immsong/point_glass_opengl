@@ -21,14 +21,16 @@ A Flutter package for high-performance 3D point cloud visualization using native
 
 ## Platform Support
 
-| Platform | Status            |
-| -------- | ----------------- |
-| Windows  | Supported         |
-| Linux    | Supported         |
-| macOS    | Not supported yet |
-| Android  | Supported         |
-| iOS      | Not supported yet |
-| Web      | Not supported     |
+| Platform | Status                       |
+| -------- | ---------------------------- |
+| Windows  | Supported                    |
+| Linux    | Supported (x86_64, aarch64)  |
+| macOS    | Not supported yet            |
+| Android  | Supported                    |
+| iOS      | Not supported yet            |
+| Web      | Not supported                |
+
+Linux supports both x86_64 and aarch64 architectures, including Raspberry Pi 4 running 64-bit Raspberry Pi OS.
 
 ## Installation
 
@@ -36,7 +38,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  point_glass_opengl: ^0.4.1
+  point_glass_opengl: ^0.4.2
 ```
 
 Then run:
